@@ -223,6 +223,49 @@
     .msg-action-btn:active { opacity: 0.6; }
     .msg-action-btn i, .msg-action-btn svg { width: 13px; height: 13px; }
     .msg-action-btn.danger { color: var(--danger); }
+    .msg-check {
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+      border: 1.5px solid #c7c7cc; margin-top: 6px;
+      display: none; align-items: center; justify-content: center;
+      background: transparent;
+    }
+    #app.msg-selecting .msg-check { display: flex; }
+    .msg-check.on { background: #07c160; border-color: #07c160; }
+    .msg-check.on::after {
+      content: ''; width: 5px; height: 9px;
+      border: solid #fff; border-width: 0 2px 2px 0;
+      transform: rotate(45deg); margin-top: -1px;
+    }
+    #app.msg-selecting .msg { cursor: pointer; user-select: none; -webkit-user-select: none; }
+    #app.msg-selecting .msg.user { justify-content: flex-start; }
+    #app.msg-selecting .msg.user .msg-content {
+      display: flex; flex-direction: column; align-items: flex-end;
+    }
+    #app.msg-selecting .msg-actions,
+    #app.msg-selecting .msg-cost { display: none !important; }
+    #app.msg-selecting .input-bar { display: none; }
+    #app.msg-selecting .header-normal { display: none !important; }
+    #app.msg-selecting .header-select { display: flex !important; }
+    .header-select {
+      display: none; width: 100%; align-items: center; justify-content: space-between;
+      padding: 0 4px;
+    }
+    .header-select-btn {
+      height: 36px; padding: 0 12px; font-size: 15px; font-weight: 550;
+      color: var(--text); border-radius: 18px;
+    }
+    .header-select-btn:active { background: var(--bg-soft); }
+    .header-select-btn.danger { color: var(--danger); font-weight: 650; }
+    .header-select-btn:disabled { opacity: 0.35; }
+    .header-select-title { font-size: 16px; font-weight: 650; }
+    .msg-select-bar {
+      display: none; flex-shrink: 0;
+      padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+      border-top: 0.5px solid var(--border); background: var(--bg);
+      gap: 10px;
+    }
+    #app.msg-selecting .msg-select-bar { display: flex; }
+    .msg-select-bar .drawer-select-btn { flex: 1; }
     .msg-cost {
       margin-top: 6px; font-size: 11px; color: var(--text-2);
       letter-spacing: 0.01em;
@@ -683,16 +726,23 @@
 <!-- ===== CHAT APP ===== -->
 <div id="app" class="screen hidden">
   <header class="app-header">
-    <button class="header-btn" onclick="openDrawer()" title="聊天记录" type="button">
-      <i data-lucide="menu"></i>
-    </button>
-    <button class="header-title" type="button" onclick="openBalanceSheet()" title="查看余额">
-      <span class="header-title-main">学习伙伴</span>
-      <span class="header-balance need" id="headerBalance">点我设置余额</span>
-    </button>
-    <button class="header-btn" onclick="handleNewChat()" title="新对话" type="button">
-      <i data-lucide="square-pen"></i>
-    </button>
+    <div class="header-normal" style="display:flex;width:100%;align-items:center;justify-content:space-between;">
+      <button class="header-btn" onclick="openDrawer()" title="聊天记录" type="button">
+        <i data-lucide="menu"></i>
+      </button>
+      <button class="header-title" type="button" onclick="openBalanceSheet()" title="查看余额">
+        <span class="header-title-main">学习伙伴</span>
+        <span class="header-balance need" id="headerBalance">点我设置余额</span>
+      </button>
+      <button class="header-btn" onclick="handleNewChat()" title="新对话" type="button">
+        <i data-lucide="square-pen"></i>
+      </button>
+    </div>
+    <div class="header-select">
+      <button class="header-select-btn" type="button" onclick="exitMsgSelectMode()">取消</button>
+      <span class="header-select-title" id="msgSelectTitle">选择消息</span>
+      <button class="header-select-btn danger" id="msgSelectDeleteBtn" type="button" onclick="deleteSelectedMessages()" disabled>删除</button>
+    </div>
   </header>
 
   <div class="chat-area" id="chatArea">
@@ -704,6 +754,10 @@
     <div class="messages" id="messages" style="display:none"></div>
   </div>
 
+  <div class="msg-select-bar" id="msgSelectBar">
+    <button class="drawer-select-btn" type="button" onclick="toggleSelectAllMessages()">全选</button>
+    <button class="drawer-select-btn danger" id="msgSelectDeleteBtn2" type="button" onclick="deleteSelectedMessages()" disabled>删除</button>
+  </div>
   <footer class="input-bar">
     <div class="image-preview-bar" id="imagePreviewBar"></div>
     <div class="input-pill">
@@ -820,7 +874,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.4</span>
+        <span class="setting-value">学习伙伴 v3.5</span>
       </div>
     </div>
   </div>
@@ -988,7 +1042,9 @@ const state = {
   conversations: [],   // [{id, title, messages, createdAt, updatedAt}]
   currentId: null,
   drawerSelecting: false,
-  selectedConvIds: {}
+  selectedConvIds: {},
+  msgSelecting: false,
+  selectedMsgIndexes: {}
 };
 // 当前对话的消息（getter，跟随 currentId 变化）
 Object.defineProperty(state, 'messages', {
@@ -1376,6 +1432,7 @@ function updateApiKeyDisplay() {
 /* ===== DRAWER（聊天记录） ===== */
 function openDrawer() {
   if (state.isStreaming) { showToast('请等待回复完成或先停止'); return; }
+  if (state.msgSelecting) exitMsgSelectMode();
   exitDrawerSelectMode();
   renderDrawer();
   $('drawer').classList.add('show');
@@ -1518,6 +1575,7 @@ function renderDrawer() {
 }
 
 function switchConversation(id) {
+  if (state.msgSelecting) exitMsgSelectMode();
   if (state.isStreaming) stopStreaming();
   state.currentId = id;
   Storage.setCurrentId(id);
@@ -1547,6 +1605,7 @@ function deleteConversation(id) {
 }
 
 function handleNewChat() {
+  if (state.msgSelecting) exitMsgSelectMode();
   if (state.isStreaming) stopStreaming();
   if (!state.currentId || state.messages.length > 0) {
     state.currentId = null;
@@ -1661,6 +1720,7 @@ function renderMessages() {
   const welcome = $('welcome');
 
   if (state.messages.length === 0) {
+    if (state.msgSelecting) exitMsgSelectMode();
     container.style.display = 'none';
     container.innerHTML = '';
     welcome.style.display = 'flex';
@@ -1699,10 +1759,124 @@ function showTranscriptionInBubble(userMsg) {
   if (bubble) bubble.appendChild(buildTranscriptionDetails(userMsg.transcription));
 }
 
+function enterMsgSelectMode(firstIndex) {
+  if (state.isStreaming) { showToast('请等待回复完成'); return; }
+  if (!state.messages.length) return;
+  state.msgSelecting = true;
+  state.selectedMsgIndexes = {};
+  if (typeof firstIndex === 'number') state.selectedMsgIndexes[firstIndex] = true;
+  const app = $('app');
+  if (app) app.classList.add('msg-selecting');
+  renderMessages();
+  updateMsgSelectUI();
+}
+
+function exitMsgSelectMode() {
+  state.msgSelecting = false;
+  state.selectedMsgIndexes = {};
+  const app = $('app');
+  if (app) app.classList.remove('msg-selecting');
+  renderMessages();
+  updateMsgSelectUI();
+}
+
+function updateMsgSelectUI() {
+  const n = Object.keys(state.selectedMsgIndexes).length;
+  const title = $('msgSelectTitle');
+  if (title) title.textContent = n > 0 ? ('已选 ' + n + ' 条') : '选择消息';
+  ['msgSelectDeleteBtn', 'msgSelectDeleteBtn2'].forEach(id => {
+    const btn = $(id);
+    if (!btn) return;
+    btn.disabled = n === 0;
+    btn.textContent = n > 0 ? ('删除(' + n + ')') : '删除';
+  });
+}
+
+function toggleMsgSelect(index) {
+  if (state.selectedMsgIndexes[index]) delete state.selectedMsgIndexes[index];
+  else state.selectedMsgIndexes[index] = true;
+  // refresh checks without full rerender for snappiness
+  const el = document.querySelector('#messages .msg[data-msg-index="' + index + '"] .msg-check');
+  if (el) el.classList.toggle('on', !!state.selectedMsgIndexes[index]);
+  updateMsgSelectUI();
+}
+
+function toggleSelectAllMessages() {
+  const total = state.messages.length;
+  const selected = Object.keys(state.selectedMsgIndexes).length;
+  state.selectedMsgIndexes = {};
+  if (selected < total) {
+    for (let i = 0; i < total; i++) state.selectedMsgIndexes[i] = true;
+  }
+  renderMessages();
+  updateMsgSelectUI();
+}
+
+function deleteSelectedMessages() {
+  const conv = currentConv();
+  if (!conv) return;
+  const indexes = Object.keys(state.selectedMsgIndexes).map(Number).sort((a, b) => b - a);
+  if (!indexes.length) return;
+  showConfirm('删除消息', '确定删除选中的 ' + indexes.length + ' 条消息吗？', () => {
+    indexes.forEach(i => {
+      if (i >= 0 && i < conv.messages.length) conv.messages.splice(i, 1);
+    });
+    saveConv(conv);
+    exitMsgSelectMode();
+    renderMessages();
+    updateConvCostDisplay();
+    showToast('已删除 ' + indexes.length + ' 条消息');
+  }, '删除', true);
+}
+
+function bindMsgLongPress(el, msgIndex) {
+  let timer = null;
+  let startX = 0, startY = 0;
+  const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  const start = (x, y) => {
+    if (state.isStreaming || state.msgSelecting) return;
+    startX = x; startY = y;
+    clear();
+    timer = setTimeout(() => {
+      timer = null;
+      if (navigator.vibrate) try { navigator.vibrate(20); } catch {}
+      enterMsgSelectMode(msgIndex);
+    }, 480);
+  };
+  const move = (x, y) => {
+    if (!timer) return;
+    if (Math.abs(x - startX) > 10 || Math.abs(y - startY) > 10) clear();
+  };
+  el.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    start(t.clientX, t.clientY);
+  }, { passive: true });
+  el.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    move(t.clientX, t.clientY);
+  }, { passive: true });
+  el.addEventListener('touchend', clear);
+  el.addEventListener('touchcancel', clear);
+  el.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    start(e.clientX, e.clientY);
+  });
+  el.addEventListener('mousemove', e => move(e.clientX, e.clientY));
+  el.addEventListener('mouseup', clear);
+  el.addEventListener('mouseleave', clear);
+  el.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    if (!state.msgSelecting) enterMsgSelectMode(msgIndex);
+  });
+}
+
 function createMessageElement(msg, isLast, msgIndex) {
   const div = document.createElement('div');
   div.className = `msg ${msg.role === 'user' ? 'user' : 'ai'}`;
   if (typeof msgIndex === 'number') div.dataset.msgIndex = String(msgIndex);
+
+  const check = document.createElement('div');
+  check.className = 'msg-check' + (state.selectedMsgIndexes[msgIndex] ? ' on' : '');
 
   const content = document.createElement('div');
   content.className = 'msg-content';
@@ -1726,7 +1900,11 @@ function createMessageElement(msg, isLast, msgIndex) {
         im.className = 'msg-image';
         im.src = imgSrc;
         im.alt = '题目图片';
-        im.onclick = () => showImageModal(imgSrc);
+        im.onclick = (e) => {
+          if (state.msgSelecting) return;
+          e.stopPropagation();
+          showImageModal(imgSrc);
+        };
         bubble.appendChild(im);
       });
     }
@@ -1734,23 +1912,16 @@ function createMessageElement(msg, isLast, msgIndex) {
       bubble.appendChild(buildTranscriptionDetails(msg.transcription));
     }
     if (msg.content && msg.content !== '请解答图片中的题目') {
-      const t = document.createElement('div');
-      t.className = 'msg-text';
-      t.textContent = msg.content;
-      bubble.appendChild(t);
-    }
-    // 用户消息也可单条删除
-    if (typeof msgIndex === 'number') {
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-      actions.style.justifyContent = 'flex-end';
-      actions.appendChild(mkAction('trash-2', '删除', () => onMsgDelete(msgIndex), 'danger'));
-      content.appendChild(actions);
+      const te = document.createElement('div');
+      te.className = 'msg-text';
+      te.textContent = msg.content;
+      bubble.appendChild(te);
     }
   } else {
     const avatar = document.createElement('div');
     avatar.className = 'msg-avatar';
     avatar.innerHTML = '<i data-lucide="graduation-cap"></i>';
+    // in select mode avatar replaced by checkbox visually on left; keep avatar after check
     div.appendChild(avatar);
 
     const text = document.createElement('div');
@@ -1759,40 +1930,52 @@ function createMessageElement(msg, isLast, msgIndex) {
     renderMath(text);
     bubble.appendChild(text);
 
-    // 每条 AI 回答都可：复制、删除本条；最新一条额外有重新生成
-    const actions = document.createElement('div');
-    actions.className = 'msg-actions';
-    actions.appendChild(mkAction('copy', '复制', () => onMsgCopy(msg, text)));
-    if (typeof msgIndex === 'number') {
-      actions.appendChild(mkAction('trash-2', '删除', () => onMsgDelete(msgIndex), 'danger'));
-    }
-    if (isLast) {
-      const regen = mkAction('refresh-cw', '重新生成', onMsgRegenerate);
-      regen.dataset.dyn = '1';
-      actions.appendChild(regen);
-    }
-    content.appendChild(actions);
-    if (msg.cost > 0 || msg.usage) {
-      const costEl = document.createElement('div');
-      costEl.className = 'msg-cost';
-      const pin = msg.usage?.prompt_tokens || 0;
-      const pout = msg.usage?.completion_tokens || 0;
-      const parts = [];
-      if (msg.cost > 0) parts.push(`花费约 ${formatYuan(msg.cost)}`);
-      if (pin || pout) parts.push(`入 ${pin} / 出 ${pout}`);
-      costEl.textContent = parts.join(' · ');
-      content.appendChild(costEl);
+    if (!state.msgSelecting) {
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      actions.appendChild(mkAction('copy', '复制', () => onMsgCopy(msg, text)));
+      if (isLast) {
+        const regen = mkAction('refresh-cw', '重新生成', onMsgRegenerate);
+        regen.dataset.dyn = '1';
+        actions.appendChild(regen);
+      }
+      content.appendChild(actions);
+      if (msg.cost > 0 || msg.usage) {
+        const costEl = document.createElement('div');
+        costEl.className = 'msg-cost';
+        const pin = msg.usage?.prompt_tokens || 0;
+        const pout = msg.usage?.completion_tokens || 0;
+        const parts = [];
+        if (msg.cost > 0) parts.push(`花费约 ${formatYuan(msg.cost)}`);
+        if (pin || pout) parts.push(`入 ${pin} / 出 ${pout}`);
+        costEl.textContent = parts.join(' · ');
+        content.appendChild(costEl);
+      }
     }
   }
 
   content.insertBefore(bubble, content.firstChild);
+
+  // 左侧勾选框（微信风格）
+  div.insertBefore(check, div.firstChild);
   div.appendChild(content);
+
+  if (typeof msgIndex === 'number') {
+    if (state.msgSelecting) {
+      div.onclick = (e) => {
+        e.preventDefault();
+        toggleMsgSelect(msgIndex);
+      };
+    } else {
+      bindMsgLongPress(div, msgIndex);
+    }
+  }
+
   if (window.lucide) lucide.createIcons();
   return div;
 }
 
 
-// 流式渲染节流：rAF 合并 + 渲染频率递减，避免长回答时每次 delta 全量重绘卡死
 let _streamRaf = null;
 let _streamText = '';
 let _streamRenderCount = 0;
