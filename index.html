@@ -402,12 +402,38 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .conv-time { font-size: 12px; color: var(--text-2); margin-top: 1px; }
-    .conv-del {
-      width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center; color: var(--text-2);
+    .conv-check {
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+      border: 1.5px solid #c7c7cc; margin-right: 4px;
+      display: none; align-items: center; justify-content: center;
+      color: #fff; background: transparent;
     }
-    .conv-del:active { background: rgba(0,0,0,0.06); color: var(--danger); }
-    .conv-del i, .conv-del svg { width: 16px; height: 16px; }
+    .drawer.selecting .conv-check { display: flex; }
+    .conv-check.on {
+      background: var(--text); border-color: var(--text);
+    }
+    .conv-check.on::after { content: ''; width: 5px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); margin-top: -2px; }
+    .drawer-header-actions { display: flex; align-items: center; gap: 2px; }
+    .drawer-edit-btn {
+      height: 32px; padding: 0 10px; border-radius: 16px;
+      font-size: 14px; font-weight: 550; color: var(--text);
+    }
+    .drawer-edit-btn:active { background: var(--bg-soft); }
+    .drawer.selecting .drawer-new { display: none; }
+    .drawer-select-bar {
+      display: none; gap: 10px; padding: 10px 14px;
+      border-top: 0.5px solid var(--border);
+      padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    }
+    .drawer.selecting .drawer-select-bar { display: flex; }
+    .drawer.selecting .drawer-footer { display: none; }
+    .drawer-select-btn {
+      flex: 1; height: 42px; border-radius: 999px;
+      font-size: 15px; font-weight: 600;
+      background: var(--bg-soft); color: var(--text);
+    }
+    .drawer-select-btn.danger { background: var(--danger); color: #fff; }
+    .drawer-select-btn:disabled { opacity: 0.4; }
     .drawer-footer {
       border-top: 0.5px solid var(--border);
       padding: 6px 14px;
@@ -692,15 +718,22 @@
 <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
 <aside class="drawer" id="drawer">
   <div class="drawer-header">
-    <span class="drawer-title">学习伙伴</span>
-    <button class="drawer-close" onclick="closeDrawer()" type="button">
-      <i data-lucide="x"></i>
-    </button>
+    <span class="drawer-title" id="drawerTitle">聊天记录</span>
+    <div class="drawer-header-actions">
+      <button class="drawer-edit-btn" id="drawerEditBtn" onclick="toggleDrawerSelectMode()" type="button">编辑</button>
+      <button class="drawer-close" onclick="closeDrawer()" type="button">
+        <i data-lucide="x"></i>
+      </button>
+    </div>
   </div>
   <button class="drawer-new" onclick="handleNewChat()" type="button">
     <i data-lucide="plus"></i> 新对话
   </button>
   <div class="drawer-list" id="drawerList"></div>
+  <div class="drawer-select-bar" id="drawerSelectBar">
+    <button class="drawer-select-btn" type="button" onclick="toggleSelectAllConvs()">全选</button>
+    <button class="drawer-select-btn danger" id="drawerDeleteBtn" type="button" onclick="deleteSelectedConversations()" disabled>删除</button>
+  </div>
   <div class="drawer-footer">
     <div class="drawer-foot-item" onclick="openSettings()">
       <i data-lucide="settings"></i><span>设置</span>
@@ -763,9 +796,13 @@
         <span class="setting-label">测试图片识别</span>
         <span class="setting-value">诊断拍照功能</span>
       </div>
+      <div class="setting-item" onclick="openDrawerSelectFromSettings()">
+        <span class="setting-label">管理聊天记录</span>
+        <span class="setting-value">选择后删除</span>
+      </div>
       <div class="setting-item" onclick="handleClearHistory()">
-        <span class="setting-label" style="color:var(--danger)">清空所有对话</span>
-        <span class="setting-value">删除全部记录</span>
+        <span class="setting-label" style="color:var(--danger)">清空全部对话</span>
+        <span class="setting-value">危险操作</span>
       </div>
     </div>
     <div class="sheet-section">
@@ -936,7 +973,9 @@ const state = {
   autoScroll: true,
   imageFormat: 'openai',
   conversations: [],   // [{id, title, messages, createdAt, updatedAt}]
-  currentId: null
+  currentId: null,
+  drawerSelecting: false,
+  selectedConvIds: {}
 };
 // 当前对话的消息（getter，跟随 currentId 变化）
 Object.defineProperty(state, 'messages', {
@@ -1324,13 +1363,101 @@ function updateApiKeyDisplay() {
 /* ===== DRAWER（聊天记录） ===== */
 function openDrawer() {
   if (state.isStreaming) { showToast('请等待回复完成或先停止'); return; }
+  exitDrawerSelectMode();
   renderDrawer();
   $('drawer').classList.add('show');
   $('drawerOverlay').classList.add('show');
 }
 function closeDrawer() {
+  exitDrawerSelectMode();
   $('drawer').classList.remove('show');
   $('drawerOverlay').classList.remove('show');
+}
+
+function openDrawerSelectFromSettings() {
+  closeSettings();
+  openDrawer();
+  enterDrawerSelectMode();
+}
+
+function enterDrawerSelectMode() {
+  state.drawerSelecting = true;
+  state.selectedConvIds = {};
+  const drawer = $('drawer');
+  if (drawer) drawer.classList.add('selecting');
+  const title = $('drawerTitle');
+  const edit = $('drawerEditBtn');
+  if (title) title.textContent = '选择聊天';
+  if (edit) edit.textContent = '完成';
+  renderDrawer();
+  updateDrawerSelectBar();
+}
+
+function exitDrawerSelectMode() {
+  state.drawerSelecting = false;
+  state.selectedConvIds = {};
+  const drawer = $('drawer');
+  if (drawer) drawer.classList.remove('selecting');
+  const title = $('drawerTitle');
+  const edit = $('drawerEditBtn');
+  if (title) title.textContent = '聊天记录';
+  if (edit) edit.textContent = '编辑';
+  updateDrawerSelectBar();
+}
+
+function toggleDrawerSelectMode() {
+  if (state.drawerSelecting) {
+    exitDrawerSelectMode();
+    renderDrawer();
+  } else {
+    if (state.conversations.length === 0) { showToast('暂无聊天记录'); return; }
+    enterDrawerSelectMode();
+  }
+}
+
+function updateDrawerSelectBar() {
+  const btn = $('drawerDeleteBtn');
+  if (!btn) return;
+  const n = Object.keys(state.selectedConvIds).length;
+  btn.disabled = n === 0;
+  btn.textContent = n > 0 ? ('删除(' + n + ')') : '删除';
+}
+
+function toggleConvSelect(id) {
+  if (state.selectedConvIds[id]) delete state.selectedConvIds[id];
+  else state.selectedConvIds[id] = true;
+  renderDrawer();
+  updateDrawerSelectBar();
+}
+
+function toggleSelectAllConvs() {
+  const all = state.conversations;
+  const selected = Object.keys(state.selectedConvIds).length;
+  state.selectedConvIds = {};
+  if (selected < all.length) {
+    all.forEach(c => { state.selectedConvIds[c.id] = true; });
+  }
+  renderDrawer();
+  updateDrawerSelectBar();
+}
+
+function deleteSelectedConversations() {
+  const ids = Object.keys(state.selectedConvIds);
+  if (!ids.length) return;
+  showConfirm('删除聊天', '确定删除选中的 ' + ids.length + ' 个聊天吗？此操作不可撤销。', () => {
+    const idSet = {};
+    ids.forEach(id => { idSet[id] = true; });
+    state.conversations = state.conversations.filter(c => !idSet[c.id]);
+    if (idSet[state.currentId]) {
+      state.currentId = null;
+      Storage.setCurrentId('');
+      renderMessages();
+    }
+    saveConvs();
+    exitDrawerSelectMode();
+    renderDrawer();
+    showToast('已删除 ' + ids.length + ' 个聊天');
+  }, '删除', true);
 }
 
 function convTime(ts) {
@@ -1351,25 +1478,29 @@ function renderDrawer() {
   const convs = [...state.conversations].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   if (convs.length === 0) {
     list.innerHTML = '<div class="drawer-empty">暂无对话记录</div>';
+    updateDrawerSelectBar();
     return;
   }
   convs.forEach(c => {
     const item = document.createElement('div');
-    item.className = 'conv-item' + (c.id === state.currentId ? ' active' : '');
+    item.className = 'conv-item' + (c.id === state.currentId && !state.drawerSelecting ? ' active' : '');
+    const check = document.createElement('div');
+    check.className = 'conv-check' + (state.selectedConvIds[c.id] ? ' on' : '');
     const main = document.createElement('div');
     main.className = 'conv-main';
-    main.innerHTML = `<div class="conv-title"></div><div class="conv-time">${convTime(c.updatedAt)}</div>`;
+    main.innerHTML = '<div class="conv-title"></div><div class="conv-time">' + convTime(c.updatedAt) + '</div>';
     main.querySelector('.conv-title').textContent = c.title || '新对话';
-    main.onclick = () => switchConversation(c.id);
-    const del = document.createElement('button');
-    del.className = 'conv-del';
-    del.type = 'button';
-    del.innerHTML = '<i data-lucide="trash-2"></i>';
-    del.onclick = (e) => { e.stopPropagation(); askDeleteConversation(c.id); };
+    const onTap = (e) => {
+      e.stopPropagation();
+      if (state.drawerSelecting) toggleConvSelect(c.id);
+      else switchConversation(c.id);
+    };
+    item.onclick = onTap;
+    item.appendChild(check);
     item.appendChild(main);
-    item.appendChild(del);
     list.appendChild(item);
   });
+  updateDrawerSelectBar();
   if (window.lucide) lucide.createIcons();
 }
 
@@ -1385,7 +1516,7 @@ function switchConversation(id) {
 function askDeleteConversation(id) {
   const c = state.conversations.find(x => x.id === id);
   if (!c) return;
-  showConfirm('删除对话', `确定删除「${c.title || '新对话'}」吗？此操作不可撤销。`, () => {
+  showConfirm('删除聊天', '确定删除「' + (c.title || '新对话') + '」吗？此操作不可撤销。', () => {
     deleteConversation(id);
   }, '删除', true);
 }
@@ -1394,11 +1525,12 @@ function deleteConversation(id) {
   state.conversations = state.conversations.filter(c => c.id !== id);
   if (state.currentId === id) {
     state.currentId = null;
+    Storage.setCurrentId('');
     renderMessages();
   }
   saveConvs();
   renderDrawer();
-  showToast('对话已删除');
+  showToast('聊天已删除');
 }
 
 function handleNewChat() {
@@ -1611,7 +1743,7 @@ function createMessageElement(msg, isLast) {
     if (isLast) {
       const regen = mkAction('refresh-cw', '重新生成', onMsgRegenerate);
       regen.dataset.dyn = '1';
-      const del = mkAction('trash-2', '删除对话', onMsgDeleteChat, 'danger');
+      const del = mkAction('trash-2', '删除此聊天', onMsgDeleteChat, 'danger');
       del.dataset.dyn = '1';
       actions.appendChild(regen);
       actions.appendChild(del);
