@@ -1225,12 +1225,13 @@ function init() {
 }
 
 function wireEvents() {
-  $('textInput').addEventListener('input', onTextInput);
-  $('textInput').addEventListener('keydown', onKeyDown);
-  $('chatArea').addEventListener('scroll', onChatScroll);
-  $('cameraInput').addEventListener('change', onFileSelected);
-  $('galleryInput').addEventListener('change', onFileSelected);
-  $('apiKeyInput').addEventListener('keydown', e => { if (e.key === 'Enter') validateAndEnter(); });
+  const bind = (id, evt, fn) => { const el = $(id); if (el) el.addEventListener(evt, fn); };
+  bind('textInput', 'input', onTextInput);
+  bind('textInput', 'keydown', onKeyDown);
+  bind('chatArea', 'scroll', onChatScroll);
+  bind('cameraInput', 'change', onFileSelected);
+  bind('galleryInput', 'change', onFileSelected);
+  bind('apiKeyInput', 'keydown', e => { if (e.key === 'Enter') validateAndEnter(); });
 }
 
 /* ===== ONBOARDING ===== */
@@ -1256,17 +1257,24 @@ async function validateAndEnter() {
   $('onboardingError').textContent = '';
 
   try {
-    const ok = await validateApiKey(key);
-    if (ok) {
-      state.apiKey = key;
-      Storage.setApiKey(key);
-      showApp();
-      renderMessages();
-    } else {
+    const result = await validateApiKey(key);
+    if (result === false) {
       $('onboardingError').textContent = 'API Key 无效，请检查后重试';
+      return;
     }
+    state.apiKey = key;
+    Storage.setApiKey(key);
+    showApp();
+    renderMessages();
+    updateBalanceUI();
   } catch (e) {
-    $('onboardingError').textContent = '验证失败：' + e.message + '（请检查网络或API地址）';
+    // 网络抖动时不拦进入：Key 先存本地，进应用后再用
+    state.apiKey = key;
+    Storage.setApiKey(key);
+    showApp();
+    renderMessages();
+    updateBalanceUI();
+    showToast('网络验证未完成，已先进入（' + (e.message || '请稍后重试发消息') + '）');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<span>进入</span><i data-lucide="arrow-right" style="width:18px;height:18px;"></i>';
@@ -1275,13 +1283,26 @@ async function validateAndEnter() {
 }
 
 async function validateApiKey(key) {
-  const res = await fetch(`${API_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: state.model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 5 })
-  });
-  if (res.status === 401 || res.status === 403) return false;
-  return res.ok;
+  // 不要用当前 Claude 模型做登录校验：Claude 异常时会把有效 Key 误判成无效，导致进不去
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(`${API_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      signal: ctrl.signal,
+      body: JSON.stringify({
+        model: VISION_MODEL,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1
+      })
+    });
+    if (res.status === 401 || res.status === 403) return false;
+    // 429/5xx/模型暂不可用：鉴权已通过，允许进入
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /* ===== APP ===== */
@@ -1295,7 +1316,9 @@ function showApp() {
 
 function updateApiKeyDisplay() {
   const key = state.apiKey;
-  $('apiKeyDisplay').textContent = key ? `${key.slice(0,6)}••••••${key.slice(-4)}` : '未设置';
+  const el = $('apiKeyDisplay');
+  if (!el) return;
+  el.textContent = key ? `${key.slice(0,6)}••••••${key.slice(-4)}` : '未设置';
 }
 
 /* ===== DRAWER（聊天记录） ===== */
@@ -1426,8 +1449,10 @@ function onModelPopoverOutside(e) {
 
 function updateModelChip() {
   const m = MODELS.find(x => x.id === state.model) || MODELS[0];
-  $('modelChipName').textContent = m.short || m.name;
-  $('currentModelName').textContent = m.name;
+  const chip = $('modelChipName');
+  const cur = $('currentModelName');
+  if (chip) chip.textContent = m.short || m.name;
+  if (cur) cur.textContent = m.name;
 }
 
 function renderModelPopover() {
