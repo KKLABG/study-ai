@@ -109,9 +109,17 @@
     .header-btn i, .header-btn svg { width: 21px; height: 21px; }
     .header-title {
       font-size: 16px; font-weight: 600; letter-spacing: -0.2px;
-      display: flex; align-items: center; gap: 4px;
+      display: flex; flex-direction: column; align-items: center; gap: 1px;
+      min-width: 0; background: none; border: none; cursor: pointer; color: inherit;
     }
-    .header-title .chev { width: 14px; height: 14px; color: var(--text-2); }
+    .header-title-main { line-height: 1.2; }
+    .header-balance {
+      font-size: 11px; font-weight: 550; color: var(--text-2);
+      max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      padding: 1px 8px; border-radius: 999px; background: var(--bg-soft);
+    }
+    .header-balance.warn { color: var(--danger); background: #ffeaea; }
+    .header-balance.need { color: var(--text); }
 
     /* ===== CHAT AREA ===== */
     .chat-area {
@@ -231,6 +239,27 @@
       border-radius: var(--radius-pill); background: var(--bg-soft);
     }
     .balance-refresh:active { opacity: 0.7; }
+    .balance-sheet-help {
+      font-size: 13px; color: var(--text-2); line-height: 1.55;
+      margin: 0 4px 16px;
+    }
+    .balance-input-wrap {
+      display: flex; align-items: center; gap: 8px;
+      height: 52px; padding: 0 16px; border-radius: var(--radius-pill);
+      border: 1px solid var(--border); background: var(--bg);
+    }
+    .balance-currency { font-size: 18px; font-weight: 700; }
+    .balance-input {
+      flex: 1; border: none; outline: none; background: transparent;
+      font-size: 22px; font-weight: 600; min-width: 0;
+    }
+    .balance-link-btn {
+      width: 100%; margin-top: 10px; height: 42px;
+      border-radius: var(--radius-pill); font-size: 14px; font-weight: 550;
+      background: var(--bg-soft); color: var(--text);
+    }
+    .balance-link-btn.muted { color: var(--text-2); font-weight: 450; font-size: 13px; }
+    .balance-link-btn:active { opacity: 0.75; }
 
     .typing { display: inline-flex; gap: 4px; padding: 8px 0; }
     .typing span {
@@ -614,7 +643,10 @@
     <button class="header-btn" onclick="openDrawer()" title="聊天记录" type="button">
       <i data-lucide="menu"></i>
     </button>
-    <div class="header-title">学习伙伴</div>
+    <button class="header-title" type="button" onclick="openBalanceSheet()" title="查看余额">
+      <span class="header-title-main">学习伙伴</span>
+      <span class="header-balance need" id="headerBalance">点我设置余额</span>
+    </button>
     <button class="header-btn" onclick="handleNewChat()" title="新对话" type="button">
       <i data-lucide="square-pen"></i>
     </button>
@@ -691,13 +723,10 @@
       <div class="sheet-section-title">用量与余额</div>
       <div class="balance-row">
         <div class="balance-meta">
-          <span class="balance-label">API 余额</span>
-          <span class="balance-hint" id="apiBalanceHint">打开设置时自动查询</span>
+          <span class="balance-label">当前可用余额</span>
+          <span class="balance-hint" id="apiBalanceHint">手机上可直接填写，聊天会自动扣减</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span class="balance-value" id="apiBalanceValue">-</span>
-          <button class="balance-refresh" type="button" onclick="refreshApiBalance(true)">刷新</button>
-        </div>
+        <span class="balance-value" id="apiBalanceValue">未设置</span>
       </div>
       <div class="balance-row">
         <div class="balance-meta">
@@ -705,6 +734,17 @@
           <span class="balance-hint">按官网标价估算，含识图</span>
         </div>
         <span class="balance-value" id="convCostValue">¥0.0000</span>
+      </div>
+      <div class="balance-row">
+        <div class="balance-meta">
+          <span class="balance-label">累计已用（本机）</span>
+          <span class="balance-hint">自上次同步余额起</span>
+        </div>
+        <span class="balance-value" id="spentTotalValue">¥0.0000</span>
+      </div>
+      <div class="setting-item" onclick="openBalanceSheet()">
+        <span class="setting-label">填写 / 同步余额</span>
+        <span class="setting-value">去官网抄剩余额度</span>
       </div>
     </div>
     <div class="sheet-section">
@@ -725,7 +765,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.1</span>
+        <span class="setting-value">学习伙伴 v3.2</span>
       </div>
     </div>
   </div>
@@ -813,6 +853,25 @@
       <button class="confirm-btn cancel" onclick="closeConfirm()">取消</button>
       <button class="confirm-btn ok" id="confirmOkBtn">确定</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== BALANCE SHEET ===== -->
+<div class="sheet-overlay" id="balanceOverlay" onclick="closeBalanceSheet()">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <h3 class="sheet-title">设置 API 余额</h3>
+    <p class="balance-sheet-help">
+      打开 AutoDL.Art「令牌管理」，把「剩余额度」填到下面。<br>
+      之后每次提问会自动扣减估算费用，手机顶部随时可看。
+    </p>
+    <div class="balance-input-wrap">
+      <span class="balance-currency">¥</span>
+      <input type="number" id="balanceInput" class="balance-input" inputmode="decimal" step="0.0001" min="0" placeholder="例如 12.5">
+    </div>
+    <button class="btn-primary" type="button" onclick="saveBalanceFromInput()" style="width:100%;margin-top:14px;">保存余额</button>
+    <button class="balance-link-btn" type="button" onclick="openTokenPage()">打开官网令牌页查看额度</button>
+    <button class="balance-link-btn muted" type="button" onclick="tryFetchBalanceFromApi()">尝试自动查询（可能被浏览器拦截）</button>
   </div>
 </div>
 
@@ -915,53 +974,155 @@ function convCostTotal(conv) {
 function updateConvCostDisplay() {
   const el = $('convCostValue');
   if (el) el.textContent = formatYuan(convCostTotal(currentConv()));
+  const spentEl = $('spentTotalValue');
+  if (spentEl) spentEl.textContent = formatYuan(Wallet.getSpent());
 }
 
 function formatQuotaYuan(quota) {
   return formatYuan((Number(quota) || 0) / QUOTA_PER_YUAN);
 }
 
-async function fetchTokenUsage() {
-  const res = await fetch(`${API_HOST}/api/usage/token`, {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Accept': 'application/json' }
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  const info = data.data || data;
-  if (!info || (info.total_available == null && !info.unlimited_quota)) {
-    throw new Error(data.message || '无额度数据');
+/* ===== 本地钱包：手机可看余额（官网跨域常拦自动查询） ===== */
+const Wallet = {
+  K_BAL: 'psp_wallet_balance',
+  K_SPENT: 'psp_wallet_spent',
+  K_SYNC: 'psp_wallet_synced_at',
+  getBalance() {
+    const v = localStorage.getItem(this.K_BAL);
+    return v == null || v === '' ? null : Number(v);
+  },
+  getSpent() { return Number(localStorage.getItem(this.K_SPENT) || 0); },
+  getSyncedAt() { return Number(localStorage.getItem(this.K_SYNC) || 0); },
+  setBalance(yuan) {
+    localStorage.setItem(this.K_BAL, String(Math.max(0, Number(yuan) || 0)));
+    localStorage.setItem(this.K_SPENT, '0');
+    localStorage.setItem(this.K_SYNC, String(Date.now()));
+  },
+  deduct(cost) {
+    const c = Number(cost) || 0;
+    if (c <= 0) return;
+    localStorage.setItem(this.K_SPENT, String(this.getSpent() + c));
+    const bal = this.getBalance();
+    if (bal != null) localStorage.setItem(this.K_BAL, String(Math.max(0, bal - c)));
   }
-  return info;
-}
+};
 
-async function refreshApiBalance(manual) {
+function remainingBalance() { return Wallet.getBalance(); }
+
+function updateBalanceUI() {
+  const bal = remainingBalance();
+  const header = $('headerBalance');
   const valueEl = $('apiBalanceValue');
   const hintEl = $('apiBalanceHint');
-  if (!valueEl || !hintEl) return;
-  if (!state.apiKey) {
-    valueEl.textContent = '-';
-    hintEl.textContent = '请先设置 API Key';
+  const spent = Wallet.getSpent();
+
+  if (header) {
+    header.classList.remove('warn', 'need');
+    if (bal == null) {
+      header.textContent = '点我设置余额';
+      header.classList.add('need');
+    } else {
+      header.textContent = '余额 ' + formatYuan(bal);
+      if (bal < 1) header.classList.add('warn');
+    }
+  }
+  if (valueEl) valueEl.textContent = bal == null ? '未设置' : formatYuan(bal);
+  if (hintEl) {
+    if (bal == null) hintEl.textContent = '点标题下方「设置余额」，或到设置里填写';
+    else {
+      const t0 = Wallet.getSyncedAt();
+      const when = t0 ? new Date(t0).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      hintEl.textContent = when ? ('已同步 ' + when + ' · 本机已用 ' + formatYuan(spent)) : ('本机已用 ' + formatYuan(spent));
+    }
+  }
+  updateConvCostDisplay();
+}
+
+function openBalanceSheet() {
+  closeSettings();
+  const input = $('balanceInput');
+  const bal = remainingBalance();
+  if (input) input.value = bal != null ? String(Number(bal.toFixed(4))) : '';
+  $('balanceOverlay').classList.add('show');
+  setTimeout(() => { if (input) input.focus(); }, 200);
+}
+function closeBalanceSheet(e) {
+  if (e) e.stopPropagation();
+  $('balanceOverlay').classList.remove('show');
+}
+
+function saveBalanceFromInput() {
+  const raw = ($('balanceInput').value || '').trim();
+  const n = Number(raw);
+  if (!raw || Number.isNaN(n) || n < 0) {
+    showToast('请输入有效的余额数字');
     return;
   }
-  valueEl.textContent = '...';
-  hintEl.textContent = '正在查询...';
+  Wallet.setBalance(n);
+  updateBalanceUI();
+  $('balanceOverlay').classList.remove('show');
+  showToast('余额已设为 ' + formatYuan(n));
+}
+
+function openTokenPage() {
+  window.open('https://www.autodl.art/large-model/tokens', '_blank', 'noopener');
+}
+
+async function fetchTokenUsage() {
+  const endpoints = [
+    API_HOST + '/api/usage/token',
+    API_HOST + '/api/usage/token/',
+    API_BASE + '/dashboard/billing/credit_grants'
+  ];
+  let lastErr = null;
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + state.apiKey, 'Accept': 'application/json' }
+      });
+      if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
+      const data = await res.json();
+      const info = data.data || data;
+      if (info && (info.total_available != null || info.unlimited_quota || info.total_available === 0)) return info;
+      if (info && info.total_granted != null) return info;
+      lastErr = new Error(data.message || '无额度数据');
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('查询失败');
+}
+
+async function tryFetchBalanceFromApi() {
+  if (!state.apiKey) { showToast('请先设置 API Key'); return; }
+  showToast('正在尝试自动查询...');
   try {
     const info = await fetchTokenUsage();
     if (info.unlimited_quota) {
-      valueEl.textContent = '无限';
-      hintEl.textContent = info.name ? `令牌：${info.name}` : '令牌额度无上限';
-    } else {
-      valueEl.textContent = formatQuotaYuan(info.total_available);
-      const used = formatQuotaYuan(info.total_used);
-      hintEl.textContent = `已用 ${used}` + (info.name ? ` · ${info.name}` : '') + '（折算仅供参考）';
+      Wallet.setBalance(999999);
+      updateBalanceUI();
+      $('balanceOverlay').classList.remove('show');
+      showToast('令牌为无限额度');
+      return;
     }
-    if (manual) showToast('余额已更新');
+    const yuan = (Number(info.total_available) || 0) / QUOTA_PER_YUAN;
+    Wallet.setBalance(yuan);
+    updateBalanceUI();
+    $('balanceOverlay').classList.remove('show');
+    showToast('已同步余额 ' + formatYuan(yuan));
   } catch (e) {
-    valueEl.textContent = '不可用';
-    hintEl.textContent = '无法查询，请到 AutoDL.Art 令牌页查看';
-    if (manual) showToast('余额查询失败，可打开官网令牌页查看');
+    showToast('自动查询被拦截，请手动填写官网剩余额度');
   }
+}
+
+function applyCostToWallet(cost) {
+  const c = Number(cost) || 0;
+  if (c <= 0) return;
+  Wallet.deduct(c);
+  updateBalanceUI();
+}
+
+async function refreshApiBalance() {
+  updateBalanceUI();
 }
 
 /* ===== STORAGE ===== */
@@ -1053,6 +1214,7 @@ function init() {
   } else {
     showOnboarding();
   }
+  updateBalanceUI();
   if (window.lucide) lucide.createIcons();
 }
 
@@ -1121,6 +1283,7 @@ function showApp() {
   $('onboarding').classList.add('hidden');
   $('app').classList.remove('hidden');
   updateApiKeyDisplay();
+  updateBalanceUI();
   if (window.lucide) lucide.createIcons();
 }
 
@@ -1290,10 +1453,9 @@ function selectModel(modelId) {
 /* ===== SETTINGS ===== */
 function openSettings() {
   updateApiKeyDisplay();
-  updateConvCostDisplay();
+  updateBalanceUI();
   closeDrawer();
   $('settingsOverlay').classList.add('show');
-  refreshApiBalance(false);
 }
 function closeSettings(e) { if (e) e.stopPropagation(); $('settingsOverlay').classList.remove('show'); }
 
@@ -1845,7 +2007,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
     conv.messages.push(aiMsg);
     saveConv(conv);
     aiDiv.replaceWith(createMessageElement(aiMsg, true));
-    updateConvCostDisplay();
+    applyCostToWallet(cost);
     scrollToBottom();
 
   } catch (e) {
@@ -1864,7 +2026,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
         conv.messages.push(aiMsg);
         saveConv(conv);
         aiDiv.replaceWith(createMessageElement(aiMsg, true));
-        updateConvCostDisplay();
+        applyCostToWallet(cost);
       } else aiDiv.remove();
     } else {
       bubble.innerHTML = `<span style="color:var(--danger)">⚠️ ${escapeHtml(e.message)}</span>`;
