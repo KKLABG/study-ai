@@ -1670,7 +1670,7 @@ function renderMessages() {
   welcome.style.display = 'none';
   container.style.display = 'flex';
   container.innerHTML = '';
-  state.messages.forEach((msg, i) => container.appendChild(createMessageElement(msg, i === state.messages.length - 1)));
+  state.messages.forEach((msg, i) => container.appendChild(createMessageElement(msg, i === state.messages.length - 1, i)));
   requestAnimationFrame(() => scrollToBottom(true));
   if (window.lucide) lucide.createIcons();
 }
@@ -1699,15 +1699,25 @@ function showTranscriptionInBubble(userMsg) {
   if (bubble) bubble.appendChild(buildTranscriptionDetails(userMsg.transcription));
 }
 
-function createMessageElement(msg, isLast) {
+function createMessageElement(msg, isLast, msgIndex) {
   const div = document.createElement('div');
   div.className = `msg ${msg.role === 'user' ? 'user' : 'ai'}`;
+  if (typeof msgIndex === 'number') div.dataset.msgIndex = String(msgIndex);
 
   const content = document.createElement('div');
   content.className = 'msg-content';
 
   const bubble = document.createElement('div');
   bubble.className = 'msg-bubble';
+
+  const mkAction = (icon, label, fn, cls) => {
+    const b = document.createElement('button');
+    b.className = 'msg-action-btn' + (cls ? ' ' + cls : '');
+    b.type = 'button';
+    b.innerHTML = `<i data-lucide="${icon}"></i> ${label}`;
+    b.onclick = (e) => { e.stopPropagation(); fn(); };
+    return b;
+  };
 
   if (msg.role === 'user') {
     if (msg.images && msg.images.length > 0) {
@@ -1729,6 +1739,14 @@ function createMessageElement(msg, isLast) {
       t.textContent = msg.content;
       bubble.appendChild(t);
     }
+    // 用户消息也可单条删除
+    if (typeof msgIndex === 'number') {
+      const actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      actions.style.justifyContent = 'flex-end';
+      actions.appendChild(mkAction('trash-2', '删除', () => onMsgDelete(msgIndex), 'danger'));
+      content.appendChild(actions);
+    }
   } else {
     const avatar = document.createElement('div');
     avatar.className = 'msg-avatar';
@@ -1741,25 +1759,17 @@ function createMessageElement(msg, isLast) {
     renderMath(text);
     bubble.appendChild(text);
 
-    // 气泡下方的操作行：复制 每条都有；重新生成/删除对话 只在最新一条回答上
+    // 每条 AI 回答都可：复制、删除本条；最新一条额外有重新生成
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
-    const mkAction = (icon, label, fn, cls) => {
-      const b = document.createElement('button');
-      b.className = 'msg-action-btn' + (cls ? ' ' + cls : '');
-      b.type = 'button';
-      b.innerHTML = `<i data-lucide="${icon}"></i> ${label}`;
-      b.onclick = fn;
-      return b;
-    };
     actions.appendChild(mkAction('copy', '复制', () => onMsgCopy(msg, text)));
+    if (typeof msgIndex === 'number') {
+      actions.appendChild(mkAction('trash-2', '删除', () => onMsgDelete(msgIndex), 'danger'));
+    }
     if (isLast) {
       const regen = mkAction('refresh-cw', '重新生成', onMsgRegenerate);
       regen.dataset.dyn = '1';
-      const del = mkAction('trash-2', '删除此聊天', onMsgDeleteChat, 'danger');
-      del.dataset.dyn = '1';
       actions.appendChild(regen);
-      actions.appendChild(del);
     }
     content.appendChild(actions);
     if (msg.cost > 0 || msg.usage) {
@@ -1780,6 +1790,7 @@ function createMessageElement(msg, isLast) {
   if (window.lucide) lucide.createIcons();
   return div;
 }
+
 
 // 流式渲染节流：rAF 合并 + 渲染频率递减，避免长回答时每次 delta 全量重绘卡死
 let _streamRaf = null;
@@ -1919,7 +1930,7 @@ async function sendMessage() {
   messagesEl.style.display = 'flex';
   // 发送新消息后，上一条回答的「重新生成/删除对话」按钮移除（只保留在最新回答上）
   document.querySelectorAll('#messages .msg-action-btn[data-dyn]').forEach(b => b.remove());
-  messagesEl.appendChild(createMessageElement(userMsg));
+  messagesEl.appendChild(createMessageElement(userMsg, false, conv.messages.length - 1));
   scrollToBottom();
 
   const apiContent = buildApiContent(text, images);
@@ -2500,7 +2511,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
     };
     conv.messages.push(aiMsg);
     saveConv(conv);
-    aiDiv.replaceWith(createMessageElement(aiMsg, true));
+    aiDiv.replaceWith(createMessageElement(aiMsg, true, conv.messages.length - 1));
     applyCostToWallet(cost);
     scrollToBottom();
 
@@ -2520,7 +2531,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
         };
         conv.messages.push(aiMsg);
         saveConv(conv);
-        aiDiv.replaceWith(createMessageElement(aiMsg, true));
+        aiDiv.replaceWith(createMessageElement(aiMsg, true, conv.messages.length - 1));
         applyCostToWallet(cost);
       } else aiDiv.remove();
     } else {
@@ -3119,9 +3130,20 @@ function onMsgRegenerate() {
   }, '重新生成');
 }
 
-function onMsgDeleteChat() {
-  if (!state.currentId) return;
-  askDeleteConversation(state.currentId);
+function onMsgDelete(msgIndex) {
+  const conv = currentConv();
+  if (!conv || state.isStreaming) { showToast('请等待回复完成后再删除'); return; }
+  if (typeof msgIndex !== 'number' || msgIndex < 0 || msgIndex >= conv.messages.length) return;
+  const msg = conv.messages[msgIndex];
+  const tip = msg.role === 'assistant' ? '确定删除这条回答吗？' : '确定删除这条消息吗？';
+  showConfirm('删除消息', tip, () => {
+    conv.messages.splice(msgIndex, 1);
+    // 若对话被删空，保留空对话方便继续聊
+    saveConv(conv);
+    renderMessages();
+    updateConvCostDisplay();
+    showToast('已删除这条消息');
+  }, '删除', true);
 }
 
 function onKeyDown(e) {
