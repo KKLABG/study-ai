@@ -2173,12 +2173,6 @@ async function streamResponse(userApiContent, userMsg, conv) {
       fullText = extractMessageText(data) || '';
       usage = extractUsage(data) || null;
       finalizeStreamRender(bubble, fullText);
-    } else {
-      const data = await res.json();
-      if (data.error) throw new Error(data.error.message || 'API错误');
-      fullText = extractMessageText(data) || '';
-      usage = extractUsage(data) || null;
-      finalizeStreamRender(bubble, fullText);
     }
 
     if (!fullText) {
