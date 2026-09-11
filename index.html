@@ -897,7 +897,6 @@
 /* ===== CONFIGURATION ===== */
 const API_HOST = 'https://www.autodl.art';
 const API_BASE = `${API_HOST}/api/v1`;
-const ANTHROPIC_BASE = `${API_HOST}/api/v1/anthropic`;
 const MODELS = [
   { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', short: 'Sonnet 5', desc: '快速准确，适合日常解题' },
   { id: 'claude-fable-5',  name: 'Claude Fable 5',  short: 'Fable 5',  desc: '深度推理，适合复杂题目' },
@@ -1895,6 +1894,7 @@ async function transcribeImages(images, onDelta, signal) {
 }
 
 
+
 function isClaudeModel(modelId) {
   const id = (modelId || state.model || '').toLowerCase();
   return id.includes('claude');
@@ -1902,39 +1902,35 @@ function isClaudeModel(modelId) {
 
 function extractDeltaText(json) {
   if (!json || typeof json !== 'object') return '';
-  // Anthropic Messages SSE
+  // Anthropic-style chunks (some relays mix formats)
   if (json.type === 'content_block_delta') {
     const d = json.delta || {};
-    if (d.type === 'text_delta' && d.text) return d.text;
     if (typeof d.text === 'string') return d.text;
     return '';
   }
-  if (json.type === 'content_block_start' && json.content_block?.type === 'text' && json.content_block.text) {
-    return json.content_block.text;
+  if (json.type === 'content_block_start' && json.content_block?.type === 'text') {
+    return json.content_block.text || '';
   }
-  // OpenAI-compatible
   const choice = json.choices && json.choices[0];
-  if (choice) {
-    const delta = choice.delta || {};
-    let c = delta.content;
-    if (c == null && choice.message) c = choice.message.content;
-    if (typeof c === 'string') return c;
-    if (Array.isArray(c)) {
-      return c.map(part => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part.text === 'string') return part.text;
-        return '';
-      }).join('');
-    }
-    if (c && typeof c === 'object' && typeof c.text === 'string') return c.text;
-    // some relays put thinking/reasoning separately; ignore for answer text
+  if (!choice) return '';
+  const delta = choice.delta || {};
+  let c = delta.content;
+  if (c == null) c = delta.text;
+  if (c == null && choice.message) c = choice.message.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c.map(part => {
+      if (typeof part === 'string') return part;
+      if (part && typeof part.text === 'string') return part.text;
+      return '';
+    }).join('');
   }
+  if (c && typeof c === 'object' && typeof c.text === 'string') return c.text;
   return '';
 }
 
 function extractMessageText(data) {
   if (!data) return '';
-  // Anthropic non-stream
   if (Array.isArray(data.content)) {
     return data.content.map(b => (b && b.type === 'text' ? (b.text || '') : '')).join('');
   }
@@ -1948,39 +1944,13 @@ function extractMessageText(data) {
 }
 
 function extractUsage(json) {
-  if (!json) return null;
-  if (json.usage) {
-    const u = json.usage;
-    return {
-      prompt_tokens: u.prompt_tokens || u.input_tokens || 0,
-      completion_tokens: u.completion_tokens || u.output_tokens || 0,
-      total_tokens: u.total_tokens || ((u.input_tokens || 0) + (u.output_tokens || 0))
-    };
-  }
-  if (json.message?.usage) return extractUsage({ usage: json.message.usage });
-  return null;
-}
-
-function buildAnthropicBody(messages, override) {
-  const openaiMsgs = buildApiMessages(messages, override);
-  let system = '';
-  const out = [];
-  openaiMsgs.forEach(m => {
-    if (m.role === 'system') {
-      system += (system ? '\n\n' : '') + (typeof m.content === 'string' ? m.content : '');
-      return;
-    }
-    if (m.role !== 'user' && m.role !== 'assistant') return;
-    out.push({ role: m.role, content: m.content });
-  });
-  const body = {
-    model: state.model,
-    max_tokens: 8192,
-    stream: true,
-    messages: out
+  if (!json || !json.usage) return null;
+  const u = json.usage;
+  return {
+    prompt_tokens: u.prompt_tokens || u.input_tokens || 0,
+    completion_tokens: u.completion_tokens || u.output_tokens || 0,
+    total_tokens: u.total_tokens || ((u.input_tokens || 0) + (u.output_tokens || 0))
   };
-  if (system) body.system = system;
-  return body;
 }
 
 async function readSseStream(res, onText, signal) {
@@ -1989,7 +1959,6 @@ async function readSseStream(res, onText, signal) {
   let buffer = '';
   let fullText = '';
   let usage = null;
-  let idleMs = 120000; // Claude 可能长时间思考，不能 30 秒就掐
 
   const abortRead = () => { try { reader.cancel(); } catch {} };
   if (signal) {
@@ -1998,18 +1967,11 @@ async function readSseStream(res, onText, signal) {
   }
 
   while (true) {
-    const readResult = await Promise.race([
-      reader.read(),
-      new Promise(r => setTimeout(() => r({ done: false, _idle: true }), idleMs))
-    ]);
-    if (readResult._idle) {
-      if (!fullText) throw new Error('等待超时（模型思考过久未返回文字），请重试');
-      break;
-    }
-    const { done, value } = readResult;
+    const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
+    // Non-SSE JSON body mistaken as stream
     if (buffer.length > 200 && !buffer.includes('data:') && !buffer.includes('event:')) {
       try {
         const data = JSON.parse(buffer);
@@ -2019,6 +1981,7 @@ async function readSseStream(res, onText, signal) {
         if (fullText && onText) onText(fullText);
         return { fullText, usage };
       } catch (e) {
+        if (e.name === 'AbortError') throw e;
         if (e.message && !/Unexpected|JSON/i.test(e.message)) throw e;
       }
     }
@@ -2028,11 +1991,11 @@ async function readSseStream(res, onText, signal) {
     let shouldBreak = false;
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith('event:')) continue; // Anthropic event name line
+      if (!trimmed || trimmed.startsWith('event:')) continue;
       if (!trimmed.startsWith('data:')) continue;
       const data = trimmed.slice(5).trim();
-      if (!data || data === '[DONE]') { if (data === '[DONE]') shouldBreak = true; continue; }
+      if (!data) continue;
+      if (data === '[DONE]') { shouldBreak = true; break; }
       try {
         const json = JSON.parse(data);
         if (json.type === 'error' || json.error) {
@@ -2048,13 +2011,14 @@ async function readSseStream(res, onText, signal) {
           if (onText) onText(fullText);
         }
       } catch (e) {
+        if (e.name === 'AbortError') throw e;
         if (e.message && !/Unexpected|JSON/i.test(e.message)) throw e;
       }
     }
     if (shouldBreak) break;
   }
 
-  if (!fullText && buffer) {
+  if (!fullText && buffer.trim()) {
     try {
       const data = JSON.parse(buffer);
       fullText = extractMessageText(data) || fullText;
@@ -2064,6 +2028,7 @@ async function readSseStream(res, onText, signal) {
   }
   return { fullText, usage };
 }
+
 
 async function streamResponse(userApiContent, userMsg, conv) {
   state.isStreaming = true;
@@ -2146,58 +2111,32 @@ async function streamResponse(userApiContent, userMsg, conv) {
     }
 
     let res;
-    const useAnthropic = isClaudeModel(state.model);
-    const reqBody = useAnthropic
-      ? buildAnthropicBody(conv.messages, override)
-      : {
-          model: state.model,
-          messages: buildApiMessages(conv.messages, override),
-          stream: true,
-          max_tokens: 8192,
-          stream_options: { include_usage: true }
-        };
-    // GPT 才加 temperature；Claude 官方/中转对非默认 temperature 常直接失败或空回复
-    if (!useAnthropic) reqBody.temperature = 0.7;
+    // 浏览器网页只能走 OpenAI 兼容端点（有 CORS）。Anthropic 原生端点会被跨域拦截，
+    // 之前失败还被误报成「连接超时」。
+    const reqBody = {
+      model: state.model,
+      messages: buildApiMessages(conv.messages, override),
+      stream: true,
+      max_tokens: 8192
+    };
+    // Claude 不要传 temperature / stream_options，部分中转会空回复或异常
+    if (!isClaudeModel(state.model)) {
+      reqBody.temperature = 0.7;
+      reqBody.stream_options = { include_usage: true };
+    }
 
-    const endpoint = useAnthropic
-      ? `${ANTHROPIC_BASE}/v1/messages`
-      : `${API_BASE}/chat/completions`;
-    const headers = useAnthropic
-      ? {
-          'Authorization': `Bearer ${state.apiKey}`,
-          'x-api-key': state.apiKey,
-          'anthropic-version': '2023-06-01',
-          'Content-Type': 'application/json'
-        }
-      : {
-          'Authorization': `Bearer ${state.apiKey}`,
-          'Content-Type': 'application/json'
-        };
-
-    // 429 过载自动重试；首包超时放宽到 90 秒（Claude 思考阶段可能很久）
     for (let attempt = 0; ; attempt++) {
-      const timeoutCtrl = new AbortController();
-      const timeoutId = setTimeout(() => timeoutCtrl.abort(), 90000);
-      const onUserAbort = () => timeoutCtrl.abort();
-      if (state.abortController) {
-        if (state.abortController.signal.aborted) { clearTimeout(timeoutId); throw new DOMException('Aborted', 'AbortError'); }
-        state.abortController.signal.addEventListener('abort', onUserAbort, { once: true });
-      }
       try {
-        res = await fetch(endpoint, {
+        res = await fetch(`${API_BASE}/chat/completions`, {
           method: 'POST',
-          headers,
+          headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(reqBody),
-          signal: timeoutCtrl.signal
+          signal: state.abortController.signal
         });
       } catch (e) {
-        clearTimeout(timeoutId);
-        if (state.abortController) state.abortController.signal.removeEventListener('abort', onUserAbort);
-        if (e.name === 'AbortError' && state.abortController?.signal.aborted) throw e;
-        throw new Error('连接超时（90秒无响应），请检查网络或稍后再试');
+        if (e.name === 'AbortError') throw e;
+        throw new Error('网络请求失败：' + (e.message || '请检查网络'));
       }
-      clearTimeout(timeoutId);
-      if (state.abortController) state.abortController.signal.removeEventListener('abort', onUserAbort);
       if (res.status !== 429 || attempt >= 2) break;
       bubble.innerHTML = `<span style="color:var(--text-2);font-size:14px;">服务器过载，${(attempt + 1) * 2} 秒后自动重试...</span>`;
       await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
@@ -2224,9 +2163,15 @@ async function streamResponse(userApiContent, userMsg, conv) {
         if (firstToken) { bubble.innerHTML = ''; firstToken = false; }
         fullText = text;
         scheduleStreamRender(bubble, fullText);
-      }, state.abortController?.signal);
+      }, state.abortController.signal);
       fullText = streamed.fullText || fullText;
       usage = streamed.usage || usage;
+      finalizeStreamRender(bubble, fullText);
+    } else {
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message || 'API错误');
+      fullText = extractMessageText(data) || '';
+      usage = extractUsage(data) || null;
       finalizeStreamRender(bubble, fullText);
     } else {
       const data = await res.json();
