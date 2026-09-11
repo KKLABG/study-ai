@@ -213,6 +213,24 @@
     .msg-action-btn:active { opacity: 0.6; }
     .msg-action-btn i, .msg-action-btn svg { width: 13px; height: 13px; }
     .msg-action-btn.danger { color: var(--danger); }
+    .msg-cost {
+      margin-top: 6px; font-size: 11px; color: var(--text-2);
+      letter-spacing: 0.01em;
+    }
+    .balance-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 14px 4px; border-bottom: 0.5px solid var(--border);
+    }
+    .balance-row:last-child { border-bottom: none; }
+    .balance-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .balance-label { font-size: 15px; }
+    .balance-hint { font-size: 12px; color: var(--text-2); }
+    .balance-value { font-size: 14px; font-weight: 600; white-space: nowrap; }
+    .balance-refresh {
+      font-size: 12px; color: var(--text-2); padding: 6px 10px;
+      border-radius: var(--radius-pill); background: var(--bg-soft);
+    }
+    .balance-refresh:active { opacity: 0.7; }
 
     .typing { display: inline-flex; gap: 4px; padding: 8px 0; }
     .typing span {
@@ -670,6 +688,26 @@
       </div>
     </div>
     <div class="sheet-section">
+      <div class="sheet-section-title">用量与余额</div>
+      <div class="balance-row">
+        <div class="balance-meta">
+          <span class="balance-label">API 余额</span>
+          <span class="balance-hint" id="apiBalanceHint">打开设置时自动查询</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="balance-value" id="apiBalanceValue">-</span>
+          <button class="balance-refresh" type="button" onclick="refreshApiBalance(true)">刷新</button>
+        </div>
+      </div>
+      <div class="balance-row">
+        <div class="balance-meta">
+          <span class="balance-label">本对话花费</span>
+          <span class="balance-hint">按官网标价估算，含识图</span>
+        </div>
+        <span class="balance-value" id="convCostValue">¥0.0000</span>
+      </div>
+    </div>
+    <div class="sheet-section">
       <div class="sheet-section-title">账号与数据</div>
       <div class="setting-item" onclick="changeApiKey()">
         <span class="setting-label">API Key</span>
@@ -687,7 +725,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.0</span>
+        <span class="setting-value">学习伙伴 v3.1</span>
       </div>
     </div>
   </div>
@@ -792,7 +830,8 @@
 
 <script>
 /* ===== CONFIGURATION ===== */
-const API_BASE = 'https://www.autodl.art/api/v1';
+const API_HOST = 'https://www.autodl.art';
+const API_BASE = `${API_HOST}/api/v1`;
 const MODELS = [
   { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', desc: '快速准确，适合日常解题' },
   { id: 'claude-fable-5',  name: 'Claude Fable 5',  desc: '深度推理，适合复杂题目' },
@@ -800,6 +839,15 @@ const MODELS = [
 ];
 // 识图专用视觉模型（便宜），负责把题目图片转成文字，再交给主模型解题
 const VISION_MODEL = 'qwen3-vl-plus';
+// 官网标价估算（元 / 百万 token，原价；会员价更低，仅作参考）
+const MODEL_PRICES = {
+  'claude-sonnet-5': { input: 21, output: 105 },
+  'claude-fable-5':  { input: 42, output: 210 },
+  'gpt-6-astra':     { input: 15, output: 60 },
+  'qwen3-vl-plus':   { input: 1, output: 10 }
+};
+// new-api 系常见额度换算：50 万额度 ≈ $1；此处按人民币展示为参考值
+const QUOTA_PER_YUAN = 500000;
 const SYSTEM_PROMPT = `你是一个专业的AI学习助手，擅长解答数学、物理、化学、生物、语文、英语、历史、地理等各学科题目。
 
 当用户发送题目图片时：
@@ -834,6 +882,87 @@ Object.defineProperty(state, 'messages', {
 });
 
 function currentConv() { return state.conversations.find(c => c.id === state.currentId) || null; }
+
+function formatYuan(n) {
+  const v = Number(n) || 0;
+  if (v < 0.0001 && v > 0) return '¥' + v.toFixed(6);
+  return '¥' + v.toFixed(4);
+}
+
+function estimateCost(model, usage) {
+  if (!usage) return 0;
+  const price = MODEL_PRICES[model] || { input: 10, output: 30 };
+  const pin = (usage.prompt_tokens || 0) / 1e6 * price.input;
+  const pout = (usage.completion_tokens || 0) / 1e6 * price.output;
+  return pin + pout;
+}
+
+function mergeUsage(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return {
+    prompt_tokens: (a.prompt_tokens || 0) + (b.prompt_tokens || 0),
+    completion_tokens: (a.completion_tokens || 0) + (b.completion_tokens || 0),
+    total_tokens: (a.total_tokens || 0) + (b.total_tokens || 0)
+  };
+}
+
+function convCostTotal(conv) {
+  if (!conv) return 0;
+  return conv.messages.reduce((s, m) => s + (Number(m.cost) || 0), 0);
+}
+
+function updateConvCostDisplay() {
+  const el = $('convCostValue');
+  if (el) el.textContent = formatYuan(convCostTotal(currentConv()));
+}
+
+function formatQuotaYuan(quota) {
+  return formatYuan((Number(quota) || 0) / QUOTA_PER_YUAN);
+}
+
+async function fetchTokenUsage() {
+  const res = await fetch(`${API_HOST}/api/usage/token`, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Accept': 'application/json' }
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const info = data.data || data;
+  if (!info || (info.total_available == null && !info.unlimited_quota)) {
+    throw new Error(data.message || '无额度数据');
+  }
+  return info;
+}
+
+async function refreshApiBalance(manual) {
+  const valueEl = $('apiBalanceValue');
+  const hintEl = $('apiBalanceHint');
+  if (!valueEl || !hintEl) return;
+  if (!state.apiKey) {
+    valueEl.textContent = '-';
+    hintEl.textContent = '请先设置 API Key';
+    return;
+  }
+  valueEl.textContent = '...';
+  hintEl.textContent = '正在查询...';
+  try {
+    const info = await fetchTokenUsage();
+    if (info.unlimited_quota) {
+      valueEl.textContent = '无限';
+      hintEl.textContent = info.name ? `令牌：${info.name}` : '令牌额度无上限';
+    } else {
+      valueEl.textContent = formatQuotaYuan(info.total_available);
+      const used = formatQuotaYuan(info.total_used);
+      hintEl.textContent = `已用 ${used}` + (info.name ? ` · ${info.name}` : '') + '（折算仅供参考）';
+    }
+    if (manual) showToast('余额已更新');
+  } catch (e) {
+    valueEl.textContent = '不可用';
+    hintEl.textContent = '无法查询，请到 AutoDL.Art 令牌页查看';
+    if (manual) showToast('余额查询失败，可打开官网令牌页查看');
+  }
+}
 
 /* ===== STORAGE ===== */
 const Storage = {
@@ -1057,6 +1186,7 @@ function switchConversation(id) {
   state.currentId = id;
   Storage.setCurrentId(id);
   renderMessages();
+  updateConvCostDisplay();
   closeDrawer();
 }
 
@@ -1158,7 +1288,13 @@ function selectModel(modelId) {
 }
 
 /* ===== SETTINGS ===== */
-function openSettings() { updateApiKeyDisplay(); closeDrawer(); $('settingsOverlay').classList.add('show'); }
+function openSettings() {
+  updateApiKeyDisplay();
+  updateConvCostDisplay();
+  closeDrawer();
+  $('settingsOverlay').classList.add('show');
+  refreshApiBalance(false);
+}
 function closeSettings(e) { if (e) e.stopPropagation(); $('settingsOverlay').classList.remove('show'); }
 
 function changeApiKey() {
@@ -1287,6 +1423,17 @@ function createMessageElement(msg, isLast) {
       actions.appendChild(del);
     }
     content.appendChild(actions);
+    if (msg.cost > 0 || msg.usage) {
+      const costEl = document.createElement('div');
+      costEl.className = 'msg-cost';
+      const pin = msg.usage?.prompt_tokens || 0;
+      const pout = msg.usage?.completion_tokens || 0;
+      const parts = [];
+      if (msg.cost > 0) parts.push(`花费约 ${formatYuan(msg.cost)}`);
+      if (pin || pout) parts.push(`入 ${pin} / 出 ${pout}`);
+      costEl.textContent = parts.join(' · ');
+      content.appendChild(costEl);
+    }
   }
 
   content.insertBefore(bubble, content.firstChild);
@@ -1468,11 +1615,18 @@ async function transcribeImages(images, onDelta, signal) {
     ...images.map(img => ({ type: 'image_url', image_url: { url: img } })),
     { type: 'text', text: '请仔细识别图片中的题目内容，将全部文字完整转录出来。要求：\n1. 数学公式用LaTeX语法表示\n2. 保持原有题号和结构\n3. 表格数据用文字清晰呈现\n4. 只做转录，不要解答题目\n直接输出转录结果。' }
   ];
+  const body = {
+    model: VISION_MODEL,
+    messages: [{ role: 'user', content }],
+    stream: true,
+    max_tokens: 2500,
+    stream_options: { include_usage: true }
+  };
   try {
     let res = await fetch(`${API_BASE}/chat/completions`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: VISION_MODEL, messages: [{ role: 'user', content }], stream: true, max_tokens: 2500 }),
+      body: JSON.stringify(body),
       signal
     });
     if (res.status === 429) {
@@ -1480,13 +1634,14 @@ async function transcribeImages(images, onDelta, signal) {
       res = await fetch(`${API_BASE}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: VISION_MODEL, messages: [{ role: 'user', content }], stream: true, max_tokens: 2500 }),
+        body: JSON.stringify(body),
         signal
       });
     }
     if (!res.ok) return null;
 
     let text = '';
+    let usage = null;
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('text/event-stream')) {
       const reader = res.body.getReader();
@@ -1505,7 +1660,9 @@ async function transcribeImages(images, onDelta, signal) {
           const data = t.slice(5).trim();
           if (data === '[DONE]') { stop = true; break; }
           try {
-            const delta = JSON.parse(data).choices?.[0]?.delta?.content;
+            const json = JSON.parse(data);
+            if (json.usage) usage = json.usage;
+            const delta = json.choices?.[0]?.delta?.content;
             if (delta) { text += delta; if (onDelta) onDelta(text); }
           } catch {}
         }
@@ -1514,9 +1671,11 @@ async function transcribeImages(images, onDelta, signal) {
     } else {
       const data = await res.json();
       text = data.choices?.[0]?.message?.content || '';
+      usage = data.usage || null;
       if (text && onDelta) onDelta(text);
     }
-    return (text && text.length > 10) ? text : null;
+    if (!text || text.length <= 10) return null;
+    return { text, usage, cost: estimateCost(VISION_MODEL, usage) };
   } catch (e) {
     if (e.name === 'AbortError') throw e;
     return null;
@@ -1541,6 +1700,9 @@ async function streamResponse(userApiContent, userMsg, conv) {
 
   let fullText = '';
   let firstToken = true;
+  let usage = null;
+  let ocrCost = 0;
+  let ocrUsage = null;
   const bubble = aiDiv.querySelector('.msg-bubble');
 
   try {
@@ -1578,8 +1740,10 @@ async function streamResponse(userApiContent, userMsg, conv) {
       clearInterval(timer);
       ocrPhase = false;
 
-      if (tr) {
-        userMsg.transcription = tr;
+      if (tr && tr.text) {
+        userMsg.transcription = tr.text;
+        ocrUsage = tr.usage || null;
+        ocrCost = tr.cost || 0;
         saveConv(conv);
         showTranscriptionInBubble(userMsg);
       } else {
@@ -1591,12 +1755,20 @@ async function streamResponse(userApiContent, userMsg, conv) {
     }
 
     let res;
+    const reqBody = {
+      model: state.model,
+      messages: buildApiMessages(conv.messages, override),
+      stream: true,
+      temperature: 0.7,
+      max_tokens: 8192,
+      stream_options: { include_usage: true }
+    };
     // 429 过载自动重试，最多 3 次
     for (let attempt = 0; ; attempt++) {
       res = await fetch(`${API_BASE}/chat/completions`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: state.model, messages: buildApiMessages(conv.messages, override), stream: true, temperature: 0.7, max_tokens: 8192 }),
+        body: JSON.stringify(reqBody),
         signal: state.abortController.signal
       });
       if (res.status !== 429 || attempt >= 2) break;
@@ -1631,6 +1803,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
           if (data === '[DONE]') { shouldBreak = true; break; }
           try {
             const json = JSON.parse(data);
+            if (json.usage) usage = json.usage;
             const delta = json.choices?.[0]?.delta?.content;
             if (delta) {
               if (firstToken) { bubble.innerHTML = ''; firstToken = false; }
@@ -1647,6 +1820,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
     } else {
       const data = await res.json();
       fullText = data.choices?.[0]?.message?.content || '';
+      usage = data.usage || null;
       bubble.innerHTML = renderMarkdown(fullText);
       addCopyToCodeBlocks(bubble);
       renderMath(bubble);
@@ -1658,19 +1832,39 @@ async function streamResponse(userApiContent, userMsg, conv) {
       bubble.innerHTML = '<span style="color:var(--text-2)">未收到回复内容</span>';
     }
 
-    const aiMsg = { role: 'assistant', content: fullText, timestamp: Date.now() };
+    const mergedUsage = mergeUsage(ocrUsage, usage);
+    const cost = ocrCost + estimateCost(state.model, usage);
+    const aiMsg = {
+      role: 'assistant',
+      content: fullText,
+      timestamp: Date.now(),
+      usage: mergedUsage || undefined,
+      cost: cost || undefined,
+      model: state.model
+    };
     conv.messages.push(aiMsg);
     saveConv(conv);
-    aiDiv.replaceWith(createMessageElement(aiMsg));
+    aiDiv.replaceWith(createMessageElement(aiMsg, true));
+    updateConvCostDisplay();
     scrollToBottom();
 
   } catch (e) {
     if (e.name === 'AbortError') {
       if (fullText) {
-        const aiMsg = { role: 'assistant', content: fullText + '\n\n_(已停止)_', timestamp: Date.now() };
+        const mergedUsage = mergeUsage(ocrUsage, usage);
+        const cost = ocrCost + estimateCost(state.model, usage);
+        const aiMsg = {
+          role: 'assistant',
+          content: fullText + '\n\n_(已停止)_',
+          timestamp: Date.now(),
+          usage: mergedUsage || undefined,
+          cost: cost || undefined,
+          model: state.model
+        };
         conv.messages.push(aiMsg);
         saveConv(conv);
         aiDiv.replaceWith(createMessageElement(aiMsg, true));
+        updateConvCostDisplay();
       } else aiDiv.remove();
     } else {
       bubble.innerHTML = `<span style="color:var(--danger)">⚠️ ${escapeHtml(e.message)}</span>`;
