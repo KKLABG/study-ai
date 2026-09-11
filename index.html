@@ -330,14 +330,18 @@
     }
     .model-chip {
       flex-shrink: 0; align-self: flex-end;
-      display: flex; align-items: center; gap: 2px;
-      padding: 6px 4px 6px 8px; border-radius: 16px;
-      font-size: 13px; font-weight: 550; white-space: nowrap;
-      color: var(--text);
-      transition: background .15s;
+      display: inline-flex; align-items: center; gap: 1px;
+      padding: 4px 2px 4px 6px; border-radius: 12px;
+      font-size: 11px; font-weight: 550; white-space: nowrap;
+      color: var(--text-2);
+      transition: background .15s, color .15s;
+      max-width: 108px;
     }
-    .model-chip:active { background: rgba(0,0,0,0.06); }
-    .model-chip i, .model-chip svg { width: 14px; height: 14px; color: var(--text-2); }
+    .model-chip span {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .model-chip:active { background: rgba(0,0,0,0.06); color: var(--text); }
+    .model-chip i, .model-chip svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-2); }
     .send-btn {
       width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
       background: var(--text); color: #fff;
@@ -441,10 +445,12 @@
 
     .model-popover {
       position: fixed; z-index: 150;
-      background: var(--bg); border-radius: 14px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 0 0 0.5px solid var(--border);
-      padding: 5px;
-      width: min(calc(100vw - 24px), 400px);
+      background: var(--bg); border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.16), 0 0 0 0.5px solid var(--border);
+      padding: 4px;
+      width: max-content;
+      min-width: 168px;
+      max-width: min(240px, calc(100vw - 24px));
       opacity: 0; pointer-events: none;
       transform: translateY(6px) scale(0.97);
       transition: opacity .15s, transform .15s;
@@ -452,12 +458,12 @@
     .model-popover.show { opacity: 1; pointer-events: auto; transform: none; }
     .model-pop-item {
       display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 12px; border-radius: 10px;
+      padding: 8px 10px; border-radius: 8px; gap: 8px;
     }
     .model-pop-item:active { background: var(--bg-soft); }
     .model-pop-info { flex: 1; min-width: 0; }
-    .model-pop-name { font-size: 15px; font-weight: 600; }
-    .model-pop-desc { font-size: 12px; color: var(--text-2); margin-top: 1px; }
+    .model-pop-name { font-size: 13px; font-weight: 600; }
+    .model-pop-desc { font-size: 11px; color: var(--text-2); margin-top: 1px; }
     .model-pop-check { width: 18px; height: 18px; flex-shrink: 0; display: none; color: var(--text); }
     .model-pop-item.selected .model-pop-check { display: block; }
     .model-pop-check i, .model-pop-check svg { width: 18px; height: 18px; }
@@ -672,7 +678,7 @@
         <i data-lucide="mic"></i>
       </button>
       <button class="model-chip" onclick="openModelPopover(this)" type="button" id="modelChip">
-        <span id="modelChipName">Claude Sonnet 5</span>
+        <span id="modelChipName">Sonnet 5</span>
         <i data-lucide="chevron-down"></i>
       </button>
       <button id="sendBtn" class="send-btn" onclick="onSendClick()" disabled type="button">
@@ -892,9 +898,9 @@
 const API_HOST = 'https://www.autodl.art';
 const API_BASE = `${API_HOST}/api/v1`;
 const MODELS = [
-  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', desc: '快速准确，适合日常解题' },
-  { id: 'claude-fable-5',  name: 'Claude Fable 5',  desc: '深度推理，适合复杂题目' },
-  { id: 'gpt-6-astra',    name: 'GPT-6 Astra',     desc: 'OpenAI 旗舰模型，综合能力强' }
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', short: 'Sonnet 5', desc: '快速准确，适合日常解题' },
+  { id: 'claude-fable-5',  name: 'Claude Fable 5',  short: 'Fable 5',  desc: '深度推理，适合复杂题目' },
+  { id: 'gpt-6-astra',    name: 'GPT-6 Astra',     short: 'Astra',    desc: 'OpenAI 旗舰模型，综合能力强' }
 ];
 // 识图专用视觉模型（便宜），负责把题目图片转成文字，再交给主模型解题
 const VISION_MODEL = 'qwen3-vl-plus';
@@ -1393,10 +1399,11 @@ function openModelPopover(anchorEl) {
 
   const r = anchorEl.getBoundingClientRect();
   const pw = pop.offsetWidth, ph = pop.offsetHeight;
-  // 右缘紧贴屏幕边距（与输入栏同宽对齐），不再跟着按钮位置留空
-  let left = Math.max(12, window.innerWidth - pw - 12);
-  let top = r.top - ph - 10;
-  if (top < 70) top = r.bottom + 10;
+  // 小弹层右对齐到模型按钮
+  let left = r.right - pw;
+  left = Math.min(Math.max(12, left), window.innerWidth - pw - 12);
+  let top = r.top - ph - 8;
+  if (top < 70) top = r.bottom + 8;
   pop.style.left = left + 'px';
   pop.style.top = top + 'px';
 
@@ -1419,7 +1426,7 @@ function onModelPopoverOutside(e) {
 
 function updateModelChip() {
   const m = MODELS.find(x => x.id === state.model) || MODELS[0];
-  $('modelChipName').textContent = m.name;
+  $('modelChipName').textContent = m.short || m.name;
   $('currentModelName').textContent = m.name;
 }
 
