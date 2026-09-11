@@ -897,6 +897,7 @@
 /* ===== CONFIGURATION ===== */
 const API_HOST = 'https://www.autodl.art';
 const API_BASE = `${API_HOST}/api/v1`;
+const ANTHROPIC_BASE = `${API_HOST}/api/v1/anthropic`;
 const MODELS = [
   { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', short: 'Sonnet 5', desc: '快速准确，适合日常解题' },
   { id: 'claude-fable-5',  name: 'Claude Fable 5',  short: 'Fable 5',  desc: '深度推理，适合复杂题目' },
@@ -1611,6 +1612,37 @@ function createMessageElement(msg, isLast) {
   return div;
 }
 
+// 流式渲染节流：rAF 合并 + 渲染频率递减，避免长回答时每次 delta 全量重绘卡死
+let _streamRaf = null;
+let _streamText = '';
+let _streamRenderCount = 0;
+
+function scheduleStreamRender(bubble, text) {
+  _streamText = text;
+  if (_streamRaf !== null) return;
+  _streamRaf = requestAnimationFrame(() => {
+    _streamRaf = null;
+    _streamRenderCount++;
+    // 只渲染 markdown（轻量），跳过 KaTeX 和 code copy（重操作）
+    bubble.innerHTML = renderMarkdown(_streamText);
+    // 第 1 次渲染立即执行；之后每 8 次渲染一次 math（降低 KaTeX 开销）
+    if (_streamRenderCount === 1 || _streamRenderCount % 8 === 0) {
+      renderMath(bubble);
+    }
+    if (state.autoScroll) scrollToBottom();
+  });
+}
+
+function finalizeStreamRender(bubble, text) {
+  if (_streamRaf !== null) { cancelAnimationFrame(_streamRaf); _streamRaf = null; }
+  _streamText = '';
+  _streamRenderCount = 0;
+  bubble.innerHTML = renderMarkdown(text);
+  addCopyToCodeBlocks(bubble);
+  renderMath(bubble);
+  if (state.autoScroll) scrollToBottom();
+}
+
 function renderMarkdown(text) {
   if (!text) return '';
   // 先把公式整体抽成占位符，绕过 markdown：
@@ -1812,7 +1844,10 @@ async function transcribeImages(images, onDelta, signal) {
     let text = '';
     let usage = null;
     const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('text/event-stream')) {
+    const isStream = contentType.includes('text/event-stream') ||
+                     (contentType.includes('text/plain') || contentType.includes('application/x-ndjson')) ||
+                     (!contentType.includes('application/json') && res.body && typeof res.body.getReader === 'function');
+    if (isStream) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -1837,6 +1872,14 @@ async function transcribeImages(images, onDelta, signal) {
         }
         if (stop) break;
       }
+      if (!text && buffer) {
+        try {
+          const data = JSON.parse(buffer);
+          text = data.choices?.[0]?.message?.content || '';
+          usage = data.usage || null;
+          if (text && onDelta) onDelta(text);
+        } catch {}
+      }
     } else {
       const data = await res.json();
       text = data.choices?.[0]?.message?.content || '';
@@ -1849,6 +1892,177 @@ async function transcribeImages(images, onDelta, signal) {
     if (e.name === 'AbortError') throw e;
     return null;
   }
+}
+
+
+function isClaudeModel(modelId) {
+  const id = (modelId || state.model || '').toLowerCase();
+  return id.includes('claude');
+}
+
+function extractDeltaText(json) {
+  if (!json || typeof json !== 'object') return '';
+  // Anthropic Messages SSE
+  if (json.type === 'content_block_delta') {
+    const d = json.delta || {};
+    if (d.type === 'text_delta' && d.text) return d.text;
+    if (typeof d.text === 'string') return d.text;
+    return '';
+  }
+  if (json.type === 'content_block_start' && json.content_block?.type === 'text' && json.content_block.text) {
+    return json.content_block.text;
+  }
+  // OpenAI-compatible
+  const choice = json.choices && json.choices[0];
+  if (choice) {
+    const delta = choice.delta || {};
+    let c = delta.content;
+    if (c == null && choice.message) c = choice.message.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+      return c.map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part.text === 'string') return part.text;
+        return '';
+      }).join('');
+    }
+    if (c && typeof c === 'object' && typeof c.text === 'string') return c.text;
+    // some relays put thinking/reasoning separately; ignore for answer text
+  }
+  return '';
+}
+
+function extractMessageText(data) {
+  if (!data) return '';
+  // Anthropic non-stream
+  if (Array.isArray(data.content)) {
+    return data.content.map(b => (b && b.type === 'text' ? (b.text || '') : '')).join('');
+  }
+  const choice = data.choices && data.choices[0];
+  if (choice) {
+    const c = choice.message?.content ?? choice.text;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) return c.map(p => (typeof p === 'string' ? p : (p?.text || ''))).join('');
+  }
+  return '';
+}
+
+function extractUsage(json) {
+  if (!json) return null;
+  if (json.usage) {
+    const u = json.usage;
+    return {
+      prompt_tokens: u.prompt_tokens || u.input_tokens || 0,
+      completion_tokens: u.completion_tokens || u.output_tokens || 0,
+      total_tokens: u.total_tokens || ((u.input_tokens || 0) + (u.output_tokens || 0))
+    };
+  }
+  if (json.message?.usage) return extractUsage({ usage: json.message.usage });
+  return null;
+}
+
+function buildAnthropicBody(messages, override) {
+  const openaiMsgs = buildApiMessages(messages, override);
+  let system = '';
+  const out = [];
+  openaiMsgs.forEach(m => {
+    if (m.role === 'system') {
+      system += (system ? '\n\n' : '') + (typeof m.content === 'string' ? m.content : '');
+      return;
+    }
+    if (m.role !== 'user' && m.role !== 'assistant') return;
+    out.push({ role: m.role, content: m.content });
+  });
+  const body = {
+    model: state.model,
+    max_tokens: 8192,
+    stream: true,
+    messages: out
+  };
+  if (system) body.system = system;
+  return body;
+}
+
+async function readSseStream(res, onText, signal) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+  let usage = null;
+  let idleMs = 120000; // Claude 可能长时间思考，不能 30 秒就掐
+
+  const abortRead = () => { try { reader.cancel(); } catch {} };
+  if (signal) {
+    if (signal.aborted) { abortRead(); throw new DOMException('Aborted', 'AbortError'); }
+    signal.addEventListener('abort', abortRead, { once: true });
+  }
+
+  while (true) {
+    const readResult = await Promise.race([
+      reader.read(),
+      new Promise(r => setTimeout(() => r({ done: false, _idle: true }), idleMs))
+    ]);
+    if (readResult._idle) {
+      if (!fullText) throw new Error('等待超时（模型思考过久未返回文字），请重试');
+      break;
+    }
+    const { done, value } = readResult;
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    if (buffer.length > 200 && !buffer.includes('data:') && !buffer.includes('event:')) {
+      try {
+        const data = JSON.parse(buffer);
+        if (data.error) throw new Error(data.error.message || 'API错误');
+        fullText = extractMessageText(data) || fullText;
+        usage = extractUsage(data) || usage;
+        if (fullText && onText) onText(fullText);
+        return { fullText, usage };
+      } catch (e) {
+        if (e.message && !/Unexpected|JSON/i.test(e.message)) throw e;
+      }
+    }
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    let shouldBreak = false;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('event:')) continue; // Anthropic event name line
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === '[DONE]') { if (data === '[DONE]') shouldBreak = true; continue; }
+      try {
+        const json = JSON.parse(data);
+        if (json.type === 'error' || json.error) {
+          throw new Error(json.error?.message || json.message || 'API返回错误');
+        }
+        const u = extractUsage(json);
+        if (u) usage = u;
+        if (json.choices?.[0]?.error) throw new Error(json.choices[0].error.message || 'API返回错误');
+        if (json.type === 'message_stop') { shouldBreak = true; continue; }
+        const piece = extractDeltaText(json);
+        if (piece) {
+          fullText += piece;
+          if (onText) onText(fullText);
+        }
+      } catch (e) {
+        if (e.message && !/Unexpected|JSON/i.test(e.message)) throw e;
+      }
+    }
+    if (shouldBreak) break;
+  }
+
+  if (!fullText && buffer) {
+    try {
+      const data = JSON.parse(buffer);
+      fullText = extractMessageText(data) || fullText;
+      usage = extractUsage(data) || usage;
+      if (fullText && onText) onText(fullText);
+    } catch {}
+  }
+  return { fullText, usage };
 }
 
 async function streamResponse(userApiContent, userMsg, conv) {
@@ -1886,11 +2100,18 @@ async function streamResponse(userApiContent, userMsg, conv) {
         const label = bubble.querySelector('.ocr-label');
         if (label) label.textContent = `正在识别图片...（${elapsed}秒）`;
       }, 1000);
+      let _ocrRaf = null, _ocrText = '', _ocrCount = 0;
       const renderOcr = partial => {
         if (!ocrPhase) return;
-        bubble.innerHTML = `<div class="ocr-label" style="color:var(--text-2);font-size:13px;margin-bottom:6px;">正在识别图片...（${elapsed}秒）</div><div class="msg-text">${renderMarkdown(partial)}</div>`;
-        renderMath(bubble);
-        if (state.autoScroll) scrollToBottom();
+        _ocrText = partial;
+        if (_ocrRaf !== null) return;
+        _ocrRaf = requestAnimationFrame(() => {
+          _ocrRaf = null;
+          _ocrCount++;
+          bubble.innerHTML = `<div class="ocr-label" style="color:var(--text-2);font-size:13px;margin-bottom:6px;">正在识别图片...（${elapsed}秒）</div><div class="msg-text">${renderMarkdown(_ocrText)}</div>`;
+          if (_ocrCount === 1 || _ocrCount % 8 === 0) renderMath(bubble);
+          if (state.autoScroll) scrollToBottom();
+        });
       };
       bubble.innerHTML = '<div class="ocr-label" style="color:var(--text-2);font-size:13px;">正在识别图片...</div>';
 
@@ -1908,6 +2129,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
       }
       clearInterval(timer);
       ocrPhase = false;
+      if (_ocrRaf !== null) { cancelAnimationFrame(_ocrRaf); _ocrRaf = null; }
 
       if (tr && tr.text) {
         userMsg.transcription = tr.text;
@@ -1924,22 +2146,58 @@ async function streamResponse(userApiContent, userMsg, conv) {
     }
 
     let res;
-    const reqBody = {
-      model: state.model,
-      messages: buildApiMessages(conv.messages, override),
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 8192,
-      stream_options: { include_usage: true }
-    };
-    // 429 过载自动重试，最多 3 次
+    const useAnthropic = isClaudeModel(state.model);
+    const reqBody = useAnthropic
+      ? buildAnthropicBody(conv.messages, override)
+      : {
+          model: state.model,
+          messages: buildApiMessages(conv.messages, override),
+          stream: true,
+          max_tokens: 8192,
+          stream_options: { include_usage: true }
+        };
+    // GPT 才加 temperature；Claude 官方/中转对非默认 temperature 常直接失败或空回复
+    if (!useAnthropic) reqBody.temperature = 0.7;
+
+    const endpoint = useAnthropic
+      ? `${ANTHROPIC_BASE}/v1/messages`
+      : `${API_BASE}/chat/completions`;
+    const headers = useAnthropic
+      ? {
+          'Authorization': `Bearer ${state.apiKey}`,
+          'x-api-key': state.apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json'
+        }
+      : {
+          'Authorization': `Bearer ${state.apiKey}`,
+          'Content-Type': 'application/json'
+        };
+
+    // 429 过载自动重试；首包超时放宽到 90 秒（Claude 思考阶段可能很久）
     for (let attempt = 0; ; attempt++) {
-      res = await fetch(`${API_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${state.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(reqBody),
-        signal: state.abortController.signal
-      });
+      const timeoutCtrl = new AbortController();
+      const timeoutId = setTimeout(() => timeoutCtrl.abort(), 90000);
+      const onUserAbort = () => timeoutCtrl.abort();
+      if (state.abortController) {
+        if (state.abortController.signal.aborted) { clearTimeout(timeoutId); throw new DOMException('Aborted', 'AbortError'); }
+        state.abortController.signal.addEventListener('abort', onUserAbort, { once: true });
+      }
+      try {
+        res = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(reqBody),
+          signal: timeoutCtrl.signal
+        });
+      } catch (e) {
+        clearTimeout(timeoutId);
+        if (state.abortController) state.abortController.signal.removeEventListener('abort', onUserAbort);
+        if (e.name === 'AbortError' && state.abortController?.signal.aborted) throw e;
+        throw new Error('连接超时（90秒无响应），请检查网络或稍后再试');
+      }
+      clearTimeout(timeoutId);
+      if (state.abortController) state.abortController.signal.removeEventListener('abort', onUserAbort);
       if (res.status !== 429 || attempt >= 2) break;
       bubble.innerHTML = `<span style="color:var(--text-2);font-size:14px;">服务器过载，${(attempt + 1) * 2} 秒后自动重试...</span>`;
       await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
@@ -1948,52 +2206,34 @@ async function streamResponse(userApiContent, userMsg, conv) {
 
     if (!res.ok) {
       let errMsg = `请求失败 (${res.status})`;
-      try { const errData = await res.json(); if (errData.error?.message) errMsg = errData.error.message; } catch {}
+      try {
+        const errData = await res.json();
+        errMsg = errData.error?.message || errData.message || errMsg;
+      } catch {}
       if (res.status === 429) errMsg = `服务器过载，请稍后再试（已自动重试 3 次）`;
       throw new Error(errMsg);
     }
 
     const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('text/event-stream')) {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        let shouldBreak = false;
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data:')) continue;
-          const data = trimmed.slice(5).trim();
-          if (data === '[DONE]') { shouldBreak = true; break; }
-          try {
-            const json = JSON.parse(data);
-            if (json.usage) usage = json.usage;
-            const delta = json.choices?.[0]?.delta?.content;
-            if (delta) {
-              if (firstToken) { bubble.innerHTML = ''; firstToken = false; }
-              fullText += delta;
-              bubble.innerHTML = renderMarkdown(fullText);
-              addCopyToCodeBlocks(bubble);
-              renderMath(bubble);
-              if (state.autoScroll) scrollToBottom();
-            }
-          } catch {}
-        }
-        if (shouldBreak) break;
-      }
+    const isStream = contentType.includes('text/event-stream') ||
+                     contentType.includes('text/plain') ||
+                     contentType.includes('application/x-ndjson') ||
+                     (!contentType.includes('application/json') && res.body && typeof res.body.getReader === 'function');
+    if (isStream) {
+      const streamed = await readSseStream(res, (text) => {
+        if (firstToken) { bubble.innerHTML = ''; firstToken = false; }
+        fullText = text;
+        scheduleStreamRender(bubble, fullText);
+      }, state.abortController?.signal);
+      fullText = streamed.fullText || fullText;
+      usage = streamed.usage || usage;
+      finalizeStreamRender(bubble, fullText);
     } else {
       const data = await res.json();
-      fullText = data.choices?.[0]?.message?.content || '';
-      usage = data.usage || null;
-      bubble.innerHTML = renderMarkdown(fullText);
-      addCopyToCodeBlocks(bubble);
-      renderMath(bubble);
-      scrollToBottom();
+      if (data.error) throw new Error(data.error.message || 'API错误');
+      fullText = extractMessageText(data) || '';
+      usage = extractUsage(data) || null;
+      finalizeStreamRender(bubble, fullText);
     }
 
     if (!fullText) {
@@ -2018,6 +2258,7 @@ async function streamResponse(userApiContent, userMsg, conv) {
     scrollToBottom();
 
   } catch (e) {
+    if (_streamRaf !== null) { cancelAnimationFrame(_streamRaf); _streamRaf = null; }
     if (e.name === 'AbortError') {
       if (fullText) {
         const mergedUsage = mergeUsage(ocrUsage, usage);
