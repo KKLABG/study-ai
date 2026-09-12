@@ -200,6 +200,7 @@
     .msg-text th { background: var(--bg-soft); font-weight: 600; }
     .msg-text blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--text-2); margin: 8px 0; }
     .msg-text .katex { font-size: 1.04em; }
+    .msg-text .katex-error { color: var(--text) !important; background: #fff3cd; padding: 0 2px; border-radius: 3px; }
     .msg-text .katex-display > .katex { font-size: 1.12em; }
     .msg-text .katex-display {
       overflow-x: auto; overflow-y: hidden;
@@ -874,7 +875,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.5</span>
+        <span class="setting-value">学习伙伴 v3.6</span>
       </div>
     </div>
   </div>
@@ -2030,6 +2031,22 @@ function renderMarkdown(text) {
   return html;
 }
 
+// 精算/保险记号常见写法：孤立下标 _hV、_{h+1}V（前面没有原子）会让 KaTeX 报错并显示红字源码
+function normalizeLatex(tex) {
+  if (!tex) return tex;
+  let s = String(tex);
+  // {}_ {h+1} → {}_{h+1}
+  s = s.replace(/\{\}\s+_/g, '{}_');
+  // \, _hV / \; _x → \,{}_hV
+  s = s.replace(/(\\,|\\;|\\!|\\quad|\\qquad)\s*_/g, '$1{}_');
+  // 行首或运算符/括号后的孤立下标：_hV、_{h+1}V
+  s = s.replace(/(^|[^A-Za-z0-9}\]\\])_(\{)/g, '$1{}_$2');
+  s = s.replace(/(^|[^A-Za-z0-9}\]\\])_([A-Za-z])/g, '$1{}_$2');
+  // 多余空格：{}_ h → {}_h（仅空组后）
+  s = s.replace(/\{\}_\s+/g, '{}_');
+  return s;
+}
+
 function renderMath(element) {
   if (window.renderMathInElement) {
     try {
@@ -2040,7 +2057,9 @@ function renderMath(element) {
           { left: '\\[', right: '\\]', display: true },
           { left: '\\(', right: '\\)', display: false }
         ],
-        throwOnError: false
+        throwOnError: false,
+        strict: 'ignore',
+        preProcess: normalizeLatex
       });
     } catch {}
   }
