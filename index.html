@@ -856,7 +856,7 @@
     <div class="sheet-section">
       <div class="sheet-section-title">账号与数据</div>
       <div class="setting-item" onclick="changeApiKey()">
-        <span class="setting-label">API Key</span>
+        <span class="setting-label">更改 API Key</span>
         <span class="setting-value" id="apiKeyDisplay">已设置</span>
       </div>
       <div class="setting-item" onclick="runImageDiagnostic()">
@@ -875,7 +875,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.6</span>
+        <span class="setting-value">学习伙伴 v3.7</span>
       </div>
     </div>
   </div>
@@ -982,6 +982,31 @@
     <button class="btn-primary" type="button" onclick="saveBalanceFromInput()" style="width:100%;margin-top:14px;">保存余额</button>
     <button class="balance-link-btn" type="button" onclick="openTokenPage()">打开官网令牌页查看额度</button>
     <button class="balance-link-btn muted" type="button" onclick="tryFetchBalanceFromApi()">尝试自动查询（可能被浏览器拦截）</button>
+  </div>
+</div>
+
+
+<!-- ===== API KEY SHEET ===== -->
+<div class="sheet-overlay" id="apiKeyOverlay" onclick="closeApiKeySheet()">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <h3 class="sheet-title">更改 API Key</h3>
+    <p class="balance-sheet-help">
+      输入新的 Auto中转站 API Key，验证通过后立即生效。<br>
+      聊天记录保留在本机，不会丢失。
+    </p>
+    <div class="key-group">
+      <input type="password" id="settingsApiKeyInput" class="key-input" placeholder="粘贴新的 API Key" autocomplete="off" spellcheck="false">
+      <button class="key-eye" onclick="toggleSettingsKeyVisibility()" type="button" title="显示/隐藏">
+        <i data-lucide="eye"></i>
+      </button>
+    </div>
+    <p id="settingsApiKeyError" class="onb-error"></p>
+    <button class="btn-primary" id="saveApiKeyBtn" type="button" onclick="saveApiKeyFromSettings()" style="width:100%;margin-top:10px;">
+      <span>验证并保存</span>
+    </button>
+    <button class="balance-link-btn" type="button" onclick="openTokenPage()">打开官网获取 Key</button>
+    <button class="balance-link-btn muted" type="button" onclick="clearApiKeyFromSettings()">清除 Key 并重新登录</button>
   </div>
 </div>
 
@@ -1341,6 +1366,7 @@ function wireEvents() {
   bind('cameraInput', 'change', onFileSelected);
   bind('galleryInput', 'change', onFileSelected);
   bind('apiKeyInput', 'keydown', e => { if (e.key === 'Enter') validateAndEnter(); });
+  bind('settingsApiKeyInput', 'keydown', e => { if (e.key === 'Enter') saveApiKeyFromSettings(); });
 }
 
 /* ===== ONBOARDING ===== */
@@ -1697,10 +1723,89 @@ function openSettings() {
 function closeSettings(e) { if (e) e.stopPropagation(); $('settingsOverlay').classList.remove('show'); }
 
 function changeApiKey() {
+  openApiKeySheet();
+}
+
+function openApiKeySheet() {
   closeSettings();
-  showConfirm('修改 API Key', '将返回启动页重新输入 API Key，聊天记录不会丢失。', () => {
-    state.apiKey = ''; Storage.setApiKey(''); showOnboarding(); $('apiKeyInput').value = '';
-  }, '确定');
+  const input = $('settingsApiKeyInput');
+  const err = $('settingsApiKeyError');
+  if (err) err.textContent = '';
+  if (input) {
+    input.type = 'password';
+    input.value = state.apiKey || '';
+  }
+  $('apiKeyOverlay').classList.add('show');
+  if (window.lucide) lucide.createIcons();
+  setTimeout(() => {
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, 200);
+}
+
+function closeApiKeySheet(e) {
+  if (e) e.stopPropagation();
+  $('apiKeyOverlay').classList.remove('show');
+}
+
+function toggleSettingsKeyVisibility() {
+  const input = $('settingsApiKeyInput');
+  if (!input) return;
+  input.type = input.type === 'password' ? 'text' : 'password';
+  if (window.lucide) lucide.createIcons();
+}
+
+async function saveApiKeyFromSettings() {
+  const input = $('settingsApiKeyInput');
+  const err = $('settingsApiKeyError');
+  const btn = $('saveApiKeyBtn');
+  const key = (input?.value || '').trim();
+  if (!key) {
+    if (err) err.textContent = '请输入 API Key';
+    return;
+  }
+  if (err) err.textContent = '';
+  const prevHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 验证中...';
+  }
+  try {
+    const result = await validateApiKey(key);
+    if (result === false) {
+      if (err) err.textContent = 'API Key 无效，请检查后重试';
+      return;
+    }
+    state.apiKey = key;
+    Storage.setApiKey(key);
+    updateApiKeyDisplay();
+    closeApiKeySheet();
+    showToast('API Key 已更新');
+  } catch (e) {
+    state.apiKey = key;
+    Storage.setApiKey(key);
+    updateApiKeyDisplay();
+    closeApiKeySheet();
+    showToast('网络验证未完成，Key 已先保存');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = prevHtml || '<span>验证并保存</span>';
+    }
+  }
+}
+
+function clearApiKeyFromSettings() {
+  showConfirm('清除 API Key', '将退出到登录页重新输入。聊天记录不会丢失。', () => {
+    state.apiKey = '';
+    Storage.setApiKey('');
+    closeApiKeySheet();
+    showOnboarding();
+    const input = $('apiKeyInput');
+    if (input) input.value = '';
+    updateApiKeyDisplay();
+  }, '清除', true);
 }
 
 function handleClearHistory() {
