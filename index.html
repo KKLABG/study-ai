@@ -863,6 +863,14 @@
         <span class="setting-label">测试图片识别</span>
         <span class="setting-value">诊断拍照功能</span>
       </div>
+      <div class="setting-item" onclick="exportConversations()">
+        <span class="setting-label">导出聊天记录</span>
+        <span class="setting-value">生成备份文件</span>
+      </div>
+      <div class="setting-item" onclick="pickImportFile()">
+        <span class="setting-label">导入聊天记录</span>
+        <span class="setting-value">从备份恢复</span>
+      </div>
       <div class="setting-item" onclick="openDrawerSelectFromSettings()">
         <span class="setting-label">管理聊天记录</span>
         <span class="setting-value">选择后删除</span>
@@ -875,7 +883,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.7</span>
+        <span class="setting-value">学习伙伴 v3.8</span>
       </div>
     </div>
   </div>
@@ -1010,9 +1018,23 @@
   </div>
 </div>
 
+
+<!-- ===== IMPORT CHAT SHEET ===== -->
+<div class="sheet-overlay" id="importOverlay" onclick="closeImportSheet()">
+  <div class="sheet" onclick="event.stopPropagation()">
+    <div class="sheet-handle"></div>
+    <h3 class="sheet-title">导入聊天记录</h3>
+    <p class="balance-sheet-help" id="importSheetHelp">检测到备份文件。</p>
+    <button class="btn-primary" type="button" onclick="confirmImportMerge()" style="width:100%;margin-top:8px;">合并导入</button>
+    <button class="balance-link-btn" type="button" onclick="confirmImportReplace()">覆盖全部（本机记录会被替换）</button>
+    <button class="balance-link-btn muted" type="button" onclick="closeImportSheet()">取消</button>
+  </div>
+</div>
+
 <!-- ===== HIDDEN INPUTS ===== -->
 <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none">
 <input type="file" id="galleryInput" accept="image/*" multiple style="display:none">
+<input type="file" id="importFileInput" accept="application/json,.json" style="display:none">
 
 <!-- ===== TOAST ===== -->
 <div class="toast" id="toast"></div>
@@ -1365,6 +1387,7 @@ function wireEvents() {
   bind('chatArea', 'scroll', onChatScroll);
   bind('cameraInput', 'change', onFileSelected);
   bind('galleryInput', 'change', onFileSelected);
+  bind('importFileInput', 'change', onImportFileSelected);
   bind('apiKeyInput', 'keydown', e => { if (e.key === 'Enter') validateAndEnter(); });
   bind('settingsApiKeyInput', 'keydown', e => { if (e.key === 'Enter') saveApiKeyFromSettings(); });
 }
@@ -1806,6 +1829,159 @@ function clearApiKeyFromSettings() {
     if (input) input.value = '';
     updateApiKeyDisplay();
   }, '清除', true);
+}
+
+let _pendingImport = null;
+
+function exportConversations() {
+  closeSettings();
+  if (!state.conversations.length) {
+    showToast('暂无聊天记录可导出');
+    return;
+  }
+  const payload = {
+    app: 'study-partner',
+    version: 1,
+    exportedAt: Date.now(),
+    currentId: state.currentId || null,
+    conversations: state.conversations
+  };
+  const text = JSON.stringify(payload);
+  const name = '学习伙伴-聊天备份-' + new Date().toISOString().slice(0, 10) + '.json';
+  try {
+    const blob = new Blob([text], { type: 'application/json' });
+    if (navigator.share && navigator.canShare) {
+      const file = new File([blob], name, { type: 'application/json' });
+      if (navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: '学习伙伴聊天备份' }).catch(() => downloadBlob(blob, name));
+        showToast('请选择保存或发送到另一台设备');
+        return;
+      }
+    }
+    downloadBlob(blob, name);
+    showToast('已导出 ' + state.conversations.length + ' 条对话');
+  } catch (e) {
+    showToast('导出失败：' + (e.message || '未知错误'));
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function pickImportFile() {
+  closeSettings();
+  const input = $('importFileInput');
+  if (!input) return;
+  input.value = '';
+  input.click();
+}
+
+function onImportFileSelected(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(String(reader.result || ''));
+      const list = normalizeImportPayload(data);
+      if (!list.length) {
+        showToast('备份文件里没有对话');
+        return;
+      }
+      _pendingImport = { conversations: list, currentId: data && data.currentId ? data.currentId : null };
+      const help = $('importSheetHelp');
+      if (help) {
+        help.textContent = '检测到 ' + list.length + ' 条对话。合并：保留本机记录并加入备份；覆盖：用备份替换本机全部对话。';
+      }
+      $('importOverlay').classList.add('show');
+    } catch (err) {
+      showToast('无法读取备份文件，请确认是本应用导出的 JSON');
+    }
+  };
+  reader.onerror = () => showToast('读取文件失败');
+  reader.readAsText(file);
+}
+
+function normalizeImportPayload(data) {
+  let raw = [];
+  if (Array.isArray(data)) raw = data;
+  else if (data && Array.isArray(data.conversations)) raw = data.conversations;
+  else return [];
+  const out = [];
+  for (const c of raw) {
+    if (!c || typeof c !== 'object') continue;
+    if (!Array.isArray(c.messages)) continue;
+    const id = String(c.id || ('c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)));
+    out.push({
+      id,
+      title: String(c.title || '导入的对话').slice(0, 80),
+      messages: c.messages,
+      createdAt: Number(c.createdAt) || Date.now(),
+      updatedAt: Number(c.updatedAt) || Date.now()
+    });
+  }
+  return out;
+}
+
+function closeImportSheet(e) {
+  if (e) e.stopPropagation();
+  $('importOverlay').classList.remove('show');
+  _pendingImport = null;
+}
+
+function confirmImportMerge() {
+  if (!_pendingImport) return;
+  const incoming = _pendingImport.conversations;
+  const map = new Map(state.conversations.map(c => [c.id, c]));
+  let added = 0, updated = 0;
+  for (const c of incoming) {
+    const old = map.get(c.id);
+    if (!old) {
+      map.set(c.id, c);
+      added++;
+    } else if ((c.updatedAt || 0) >= (old.updatedAt || 0)) {
+      map.set(c.id, c);
+      updated++;
+    }
+  }
+  state.conversations = Array.from(map.values());
+  saveConvs();
+  if (!state.conversations.find(c => c.id === state.currentId)) {
+    state.currentId = state.conversations[0]?.id || null;
+    Storage.setCurrentId(state.currentId || '');
+  }
+  closeImportSheet();
+  renderMessages();
+  updateConvCostDisplay();
+  showToast('合并完成：新增 ' + added + '，更新 ' + updated);
+}
+
+function confirmImportReplace() {
+  if (!_pendingImport) return;
+  showConfirm('覆盖全部对话', '本机现有聊天会被备份文件完全替换，且不可撤销。确定吗？', () => {
+    const data = _pendingImport;
+    state.conversations = data.conversations;
+    const prefer = data.currentId && state.conversations.find(c => c.id === data.currentId)
+      ? data.currentId
+      : (state.conversations[0]?.id || null);
+    state.currentId = prefer;
+    Storage.setCurrentId(prefer || '');
+    saveConvs();
+    closeImportSheet();
+    renderMessages();
+    updateConvCostDisplay();
+    showToast('已覆盖导入 ' + state.conversations.length + ' 条对话');
+  }, '覆盖', true);
 }
 
 function handleClearHistory() {
