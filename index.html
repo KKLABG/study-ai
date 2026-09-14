@@ -8,7 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>学习伙伴</title>
+  <meta name="theme-color" content="#ffffff" id="themeColorMeta">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  <link rel="stylesheet" href="assets/xinghe-theme.css?v=39">
   <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
@@ -143,6 +148,11 @@
     .welcome-logo i, .welcome-logo svg { width: 24px; height: 24px; }
     .welcome-title { font-size: 21px; font-weight: 700; letter-spacing: -0.3px; margin-bottom: 6px; }
     .welcome-desc { font-size: 14px; color: var(--text-2); }
+    .welcome-classic {
+      flex: 1; width: 100%; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center; padding-bottom: 60px;
+    }
 
     .messages { display: flex; flex-direction: column; gap: 20px; max-width: 760px; width: 100%; margin: 0 auto; }
 
@@ -748,9 +758,72 @@
 
   <div class="chat-area" id="chatArea">
     <div class="welcome" id="welcome">
-      <div class="welcome-logo"><i data-lucide="graduation-cap"></i></div>
-      <h2 class="welcome-title">你好，我是你的学习伙伴</h2>
-      <p class="welcome-desc">拍张照片或输入题目，随时提问</p>
+      <div class="welcome-classic" id="welcomeClassic">
+        <div class="welcome-logo"><i data-lucide="graduation-cap"></i></div>
+        <h2 class="welcome-title">你好，我是你的学习伙伴</h2>
+        <p class="welcome-desc">拍张照片或输入题目，随时提问</p>
+      </div>
+      <div class="welcome-xinghe" id="welcomeXinghe">
+        <section class="xh-hero">
+          <div class="xh-hero-bg" aria-hidden="true"></div>
+          <div class="xh-hero-content">
+            <div class="xh-brand-row">
+              <div class="xh-brand">
+                <div class="xh-planet" aria-hidden="true"></div>
+                <div class="xh-brand-text">
+                  <div class="xh-brand-name">星河智脑</div>
+                  <div class="xh-brand-sub">你的 AI 智能体</div>
+                </div>
+              </div>
+              <div class="xh-nav-hint">探索 · 思考 · 创造</div>
+            </div>
+            <div>
+              <div class="xh-slogan">知识，是照亮前路的星光。</div>
+              <p class="xh-slogan-sub">你好，我是你的 AI 智能体。陪你探索未知，解答难题，把每一道题变成通向更大世界的入口。</p>
+              <div class="xh-cta-hand">问我吧，让智慧为你点亮前路。</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="xh-photo-card">
+          <div class="xh-photo-head">
+            <div class="xh-photo-title"><span class="spark">✦</span> 拍照搜题 / 让 AI 帮你解答</div>
+            <div class="xh-photo-badge">支持手写 · 印刷 · 公式题</div>
+          </div>
+          <div class="xh-orb-wrap">
+            <button class="xh-orb" type="button" onclick="openCameraSheet()" title="拍照搜题">
+              <i data-lucide="camera"></i>
+            </button>
+            <div class="xh-orb-caption">拍照 · 识别 · 解答</div>
+          </div>
+          <button class="xh-mini-input" type="button" onclick="focusMainInput()">
+            <i data-lucide="pencil"></i>
+            <span>也可以直接输入题目...</span>
+            <span class="xh-mini-send" aria-hidden="true"><i data-lucide="send"></i></span>
+          </button>
+        </section>
+
+        <div class="xh-guess-head">
+          <div class="xh-guess-title">猜你想问</div>
+          <button class="xh-guess-refresh" type="button" onclick="shuffleXingheGuess()" title="换一批">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+        </div>
+        <div class="xh-guess-grid" id="xhGuessGrid"></div>
+
+        <section class="xh-assist">
+          <div class="xh-assist-bg" aria-hidden="true"></div>
+          <div class="xh-assist-content">
+            <div class="xh-assist-label">学习助手</div>
+            <div class="xh-assist-quote">每一个问题<br>都是通向更大世界的入口</div>
+          </div>
+        </section>
+
+        <div class="xh-glass-quote">
+          知识是人类进步的阶梯。
+          <em>—— 高尔基</em>
+        </div>
+      </div>
     </div>
     <div class="messages" id="messages" style="display:none"></div>
   </div>
@@ -819,6 +892,13 @@
     <div class="sheet-handle"></div>
     <h3 class="sheet-title">设置</h3>
     <div class="sheet-section">
+      <div class="sheet-section-title">外观</div>
+      <div class="setting-item" onclick="toggleTheme()">
+        <span class="setting-label">界面风格</span>
+        <span class="setting-value" id="themeSettingValue">经典浅色</span>
+      </div>
+    </div>
+    <div class="sheet-section">
       <div class="sheet-section-title">模型</div>
       <div class="setting-item" onclick="openModelPopover(this)">
         <span class="setting-label">当前模型</span>
@@ -883,7 +963,7 @@
     <div class="sheet-section">
       <div class="setting-item">
         <span class="setting-label">关于</span>
-        <span class="setting-value">学习伙伴 v3.8</span>
+        <span class="setting-value">学习伙伴 v3.9</span>
       </div>
     </div>
   </div>
@@ -1081,6 +1161,7 @@ const SYSTEM_PROMPT = `你是一个专业的AI学习助手，擅长解答数学�
 /* ===== STATE ===== */
 const state = {
   apiKey: '',
+  theme: 'classic',
   model: 'claude-sonnet-5',
   isStreaming: false,
   pendingImages: [],
@@ -1304,7 +1385,10 @@ const Storage = {
   getConversations() {
     try { return JSON.parse(localStorage.getItem(this.K_CONVS) || '[]'); }
     catch { return []; }
-  }
+  },
+  K_THEME: 'psp_theme',
+  getTheme() { return localStorage.getItem(this.K_THEME) || 'classic'; },
+  setTheme(v) { localStorage.setItem(this.K_THEME, v); }
 };
 
 function saveConvs() {
@@ -1360,9 +1444,11 @@ function init() {
   if (window.marked) marked.setOptions({ breaks: true, gfm: true });
   state.apiKey = Storage.getApiKey();
   state.model = Storage.getModel();
+  state.theme = Storage.getTheme() === 'xinghe' ? 'xinghe' : 'classic';
   state.imageFormat = Storage.getImageFormat(state.model);
   state.conversations = Storage.getConversations();
   state.currentId = Storage.getCurrentId();
+  applyTheme(state.theme, true);
   migrateOldMessages();
   if (!state.conversations.find(c => c.id === state.currentId)) state.currentId = null;
 
@@ -1736,10 +1822,92 @@ function selectModel(modelId) {
   showToast(`已切换到 ${MODELS.find(m => m.id === modelId).name}`);
 }
 
+
+/* ===== THEME (星河智脑) ===== */
+const XH_GUESSES = [
+  { icon: 'sigma', q: '这道数学题怎么解？', tags: '函数 · 几何 · 概率' },
+  { icon: 'languages', q: '帮我分析这篇英文', tags: '阅读 · 语法 · 写作' },
+  { icon: 'flask-conical', q: '这个化学反应原理？', tags: '化学 · 方程式' },
+  { icon: 'book-open', q: '解释这个知识点', tags: '概念 · 例题 · 总结' },
+  { icon: 'atom', q: '物理公式怎么用？', tags: '力学 · 电学 · 光学' },
+  { icon: 'pen-line', q: '帮我批改这段作文', tags: '语文 · 结构 · 润色' },
+  { icon: 'globe', q: '这道地理题怎么答？', tags: '气候 · 区域 · 地图' },
+  { icon: 'scroll-text', q: '历史事件梳理一下', tags: '时间线 · 因果' }
+];
+
+function applyTheme(theme, silent) {
+  const t = theme === 'xinghe' ? 'xinghe' : 'classic';
+  state.theme = t;
+  document.documentElement.setAttribute('data-theme', t === 'xinghe' ? 'xinghe' : 'classic');
+  const meta = $('themeColorMeta');
+  if (meta) meta.setAttribute('content', t === 'xinghe' ? '#050a18' : '#ffffff');
+  const bar = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+  if (bar) bar.setAttribute('content', t === 'xinghe' ? 'black-translucent' : 'default');
+  const titleMain = document.querySelector('.header-title-main');
+  if (titleMain) titleMain.textContent = t === 'xinghe' ? '星河智脑' : '学习伙伴';
+  updateThemeSettingDisplay();
+  if (t === 'xinghe') renderXingheGuess();
+  if (window.lucide) lucide.createIcons();
+  if (!silent) showToast(t === 'xinghe' ? '已切换为星河智脑风格' : '已切换为经典浅色');
+}
+
+function updateThemeSettingDisplay() {
+  const el = $('themeSettingValue');
+  if (el) el.textContent = state.theme === 'xinghe' ? '星河智脑' : '经典浅色';
+}
+
+function toggleTheme() {
+  const next = state.theme === 'xinghe' ? 'classic' : 'xinghe';
+  Storage.setTheme(next);
+  applyTheme(next);
+}
+
+function focusMainInput() {
+  const input = $('textInput');
+  if (!input) return;
+  input.focus();
+  try { input.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+}
+
+function renderXingheGuess(list) {
+  const grid = $('xhGuessGrid');
+  if (!grid) return;
+  const items = list || XH_GUESSES.slice(0, 4);
+  grid.innerHTML = items.map(it => `
+    <button class="xh-guess-item" type="button" onclick="askXingheGuess(${JSON.stringify(it.q)})">
+      <span class="xh-guess-ico"><i data-lucide="${it.icon}"></i></span>
+      <span class="xh-guess-body">
+        <div class="xh-guess-q"></div>
+        <div class="xh-guess-tags"></div>
+      </span>
+      <span class="xh-guess-chev"><i data-lucide="chevron-right"></i></span>
+    </button>`).join('');
+  Array.from(grid.children).forEach((btn, i) => {
+    btn.querySelector('.xh-guess-q').textContent = items[i].q;
+    btn.querySelector('.xh-guess-tags').textContent = items[i].tags;
+  });
+  if (window.lucide) lucide.createIcons();
+}
+
+function shuffleXingheGuess() {
+  const shuffled = [...XH_GUESSES].sort(() => Math.random() - 0.5).slice(0, 4);
+  renderXingheGuess(shuffled);
+}
+
+function askXingheGuess(q) {
+  const input = $('textInput');
+  if (!input) return;
+  input.value = q;
+  input.dispatchEvent(new Event('input'));
+  focusMainInput();
+  if (typeof updateSendButton === 'function') updateSendButton();
+}
+
 /* ===== SETTINGS ===== */
 function openSettings() {
   updateApiKeyDisplay();
   updateBalanceUI();
+  updateThemeSettingDisplay();
   closeDrawer();
   $('settingsOverlay').classList.add('show');
 }
